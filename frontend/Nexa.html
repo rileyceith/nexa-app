@@ -52,7 +52,7 @@ h1 em{font-style:normal;background:var(--iri);-webkit-background-clip:text;backg
 .sheet h2{margin:0 0 6px;font-size:24px;letter-spacing:-.02em}
 .sheet p{margin:0 0 18px;color:var(--muted);font-size:14px}
 .sheet label{display:grid;gap:6px;font-size:12px;color:var(--muted);margin-bottom:12px}
-.sheet input{border:1px solid var(--edge);background:var(--glass);border-radius:14px;padding:13px 16px;font-size:15px}
+.sheet input,.sheet select{border:1px solid var(--edge);background:var(--glass);border-radius:14px;padding:13px 16px;font-size:15px}
 .sheet .row{display:flex;gap:10px;margin-top:6px}
 .sheet .row .btn{flex:1}
 .ok{color:#2f8f6b;font-size:14px;margin-top:12px}
@@ -63,7 +63,11 @@ h1 em{font-style:normal;background:var(--iri);-webkit-background-clip:text;backg
 .sheet .terms{max-height:130px;overflow:auto;font-size:12px;border:1px solid var(--edge);border-radius:14px;padding:10px 14px;margin-bottom:12px;color:var(--muted)}
 .sheet .terms p{font-size:12px;margin:0 0 8px}
 .sheet .switch{margin:14px 0 0;text-align:center;font-size:13px}
-.hero{min-height:calc(100svh - 80px)}
+.sheet .hd{animation:fade .25s both}
+.sheet .err{animation:fade .2s both}
+.sheet .btn.busy{opacity:.55;cursor:wait;transform:none}
+.scrim.leaving{animation:fadeOut .2s both;pointer-events:none}
+.sheet.leaving{animation:sink .2s both}
 .hero>*{animation:rise .9s cubic-bezier(.2,.7,.2,1) both}
 .hero>*:nth-child(1){animation-delay:.15s}.hero>*:nth-child(2){animation-delay:.28s}.hero>*:nth-child(3){animation-delay:.4s}.hero>*:nth-child(4){animation-delay:.52s}.hero>*:nth-child(5){animation-delay:.64s}
 .float{position:absolute;z-index:1;padding:14px 18px;border-radius:20px;background:var(--glass);border:1px solid var(--edge);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 18px 40px -16px var(--shade);font-size:13px;color:var(--muted);animation:bob 6s ease-in-out infinite}
@@ -72,13 +76,6 @@ h1 em{font-style:normal;background:var(--iri);-webkit-background-clip:text;backg
 .float .mini i{display:block;height:100%;width:72%;background:var(--iri)}
 .f1{left:max(4vw,calc(50% - 500px));top:26vh}
 .f2{right:max(4vw,calc(50% - 500px));top:44vh;animation-delay:-3s}
-.steps{max-width:1000px;margin:0 auto;width:100%;padding:56px 22px 110px}
-.stitle{text-align:center;font-size:clamp(26px,4vw,38px);letter-spacing:-.02em;margin:0 0 28px}
-.stepgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
-.step{padding:24px;border-radius:26px;background:var(--glass);border:1px solid var(--edge);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 18px 40px -20px var(--shade)}
-.step b{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--iri);color:#23222b;margin-bottom:14px}
-.step h3{margin:0 0 6px;font-size:18px}
-.step p{margin:0;color:var(--muted);font-size:14px;line-height:1.55}
 .btn.wide{width:100%}
 .or{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:12px;margin:14px 0}
 .or::before,.or::after{content:"";flex:1;height:1px;background:var(--edge)}
@@ -116,16 +113,61 @@ body.inapp{background:#e0e0e6}
 .dpill:active{box-shadow:var(--inset)}
 .dlab{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ntitle);font-weight:700;display:block}
 
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:22px;margin-bottom:24px}
-.kpi{display:flex;align-items:center;gap:16px;padding:20px 18px;border-radius:28px;background:var(--nbg);box-shadow:var(--raise)}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;margin-bottom:24px}
+.kpi{display:flex;align-items:center;gap:16px;padding:20px 18px;border-radius:24px;background:var(--nbg);box-shadow:var(--raise)}
 .kpi b{display:block;font-size:24px;letter-spacing:-.02em;margin:4px 0 2px;color:var(--nink)}
 .kpi small{display:block;font-size:11.5px;color:var(--nmut);line-height:1.5}
 .kpi .kd{color:var(--ncy)}
+.kpis:not(.three) .kpi{position:relative;min-width:0;overflow:hidden;padding:22px 20px;border:1px solid rgba(116,88,230,.1);background:linear-gradient(135deg,var(--nsl),var(--nbg));box-shadow:0 10px 26px rgba(35,34,43,.08);transition:transform .2s ease,box-shadow .2s ease}
+.kpis:not(.three) .kpi::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:linear-gradient(180deg,var(--ncy1),var(--ncy),var(--npu));opacity:.8}
+.kpis:not(.three) .kpi:hover{transform:translateY(-3px);box-shadow:0 16px 30px rgba(35,34,43,.12)}
+.kpis:not(.three) .kpi .dlab{font-size:10px;letter-spacing:.16em}
+.kpis:not(.three) .kpi b{font-size:clamp(25px,2.4vw,30px);line-height:1.15;font-variant-numeric:tabular-nums;margin:5px 0 4px}
+.kpis:not(.three) .kpi small{font-size:12px}
+.kpis:not(.three) .kpi .kd{margin-top:3px}
 .nring{position:relative;width:82px;height:82px;flex:none;border-radius:50%;display:grid;place-items:center;background:var(--nbg);box-shadow:var(--rsm)}
 .nring svg{position:absolute;inset:5px;width:calc(100% - 10px);height:calc(100% - 10px)}
 .rt{fill:none;stroke:var(--nsd);stroke-width:7;opacity:.45}
 .rf{fill:none;stroke:var(--ncy);stroke-width:7;stroke-linecap:round;transition:stroke-dashoffset .8s cubic-bezier(.2,.7,.2,1)}
 .nring .nin{width:40px;height:40px}
+.kpis:not(.three) .nring{width:72px;height:72px;background:rgba(116,88,230,.08);box-shadow:none;border:1px solid rgba(116,88,230,.1)}
+.kpis:not(.three) .nring .nin{background:transparent;box-shadow:none}
+.assistant-chat{grid-column:1/-1}
+.assistant-messages{display:grid;gap:10px;max-height:360px;overflow:auto;padding:2px}
+.assistant-message{max-width:min(82%,720px);padding:12px 16px;border-radius:18px;background:var(--nsl);color:var(--nink)}
+.assistant-message.user{justify-self:end;background:var(--ncy);color:#fff}
+.assistant-message p{margin:0;color:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.assistant-label{display:block;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;opacity:.72;margin-bottom:4px}
+.assistant-prompts{display:flex;flex-wrap:wrap;gap:8px}
+.assistant-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end}
+.assistant-form textarea{width:100%;min-height:48px;max-height:140px;resize:vertical;border:0;border-radius:16px;padding:13px 16px;background:var(--nbg);box-shadow:var(--inset);color:var(--nink);font:inherit}
+.assistant-form textarea::placeholder{color:var(--nmut)}
+.assistant-form .btn:disabled{opacity:.55;cursor:wait}
+.assistant-note{font-size:11px!important}
+.assistant-error{color:#c0392b!important}
+.assistant-modes,.analysis-options{display:flex;flex-wrap:wrap;gap:8px}
+.assistant-modes .nseg{margin-left:auto}
+.analysis-options .dmini[aria-pressed='true']{background:var(--ncy);color:#fff;box-shadow:none}
+.algorithm-results{grid-column:1/-1}
+.algorithm-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px}
+.algorithm-metric{padding:14px 16px;border-radius:18px;background:var(--nsl);min-width:0}
+.algorithm-metric span{display:block;color:var(--nmut);font-size:11px}
+.algorithm-metric b{display:block;margin-top:5px;font-size:20px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.algorithm-insights{margin:0;padding-left:20px;display:grid;gap:8px;color:var(--nink);font-size:13px;line-height:1.55}
+.algorithm-series{display:grid;gap:10px}
+.algorithm-series-row{display:grid;grid-template-columns:64px minmax(0,1fr) 100px;align-items:center;gap:12px;font-size:12px}
+.algorithm-series-row>span:first-child{color:var(--nmut)}
+.algorithm-series-track{height:12px;border-radius:99px;background:var(--nbg);box-shadow:var(--inset);overflow:hidden}
+.algorithm-series-track i{display:block;height:100%;border-radius:99px;background:var(--iri)}
+.algorithm-series-values{text-align:right;display:grid;gap:2px;font-variant-numeric:tabular-nums}
+.algorithm-series-values b{font-size:12px}
+.algorithm-series-values span{font-size:10px;color:var(--nmut)}
+.algorithm-table{display:grid;gap:10px}
+.algorithm-row{display:grid;grid-template-columns:minmax(100px,1fr) repeat(3,minmax(72px,auto));align-items:center;gap:12px;padding:12px 14px;border-radius:16px;background:var(--nsl);font-size:12px}
+.algorithm-row b{font-size:13px;overflow-wrap:anywhere}
+.algorithm-row span:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}
+.algorithm-empty{padding:14px;border-radius:16px;background:var(--nsl)}
+.algorithm-empty p{margin:0}
 
 .dgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
 .dc{padding:22px;border-radius:30px;background:var(--nbg);box-shadow:var(--raise);display:flex;flex-direction:column;gap:14px;animation:rise .7s cubic-bezier(.2,.7,.2,1) both}
@@ -138,10 +180,13 @@ body.inapp{background:#e0e0e6}
 
 .nbars{display:flex;gap:14px;align-items:stretch;height:230px;padding:4px 6px 0}
 .ncol{flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;min-width:0}
-.ncol b{font-size:12px;color:var(--nink)}.ncol span{font-size:11px;color:var(--nmut);letter-spacing:.06em}
-.ntrack{flex:1;width:min(30px,100%);border-radius:99px;background:var(--nbg);box-shadow:var(--inset);display:flex;align-items:flex-end;padding:4px}
+.ncol b{font-size:12px;color:var(--nink)}.ncol span{font-size:11px;color:var(--nmut);letter-spacing:.06em;white-space:nowrap}
+.ntrack{flex:1;width:min(30px,100%);border-radius:99px;background:var(--nbg);box-shadow:var(--inset);display:flex;align-items:flex-end;padding:4px;position:relative}
 .ntrack i{display:block;width:100%;border-radius:99px;background:linear-gradient(180deg,var(--ncy1),var(--ncy2));box-shadow:0 0 12px rgba(var(--nglow),.4);transition:height .7s cubic-bezier(.2,.7,.2,1)}
 .ntrack i.fc{background:linear-gradient(180deg,#ffd9a0,var(--npu));box-shadow:none}
+.ngoal{position:absolute;left:-4px;right:-4px;height:0;border-top:2px dashed var(--nink);opacity:.8;pointer-events:none}
+.nleg i.gl{background:none;border:2px dashed var(--nink);margin-left:8px}
+.nbars.nday{gap:4px}
 
 .dbar{height:12px;border-radius:99px;background:var(--nbg);box-shadow:var(--inset);padding:2px;overflow:hidden}
 .dbar.thin{height:10px;padding:2px}
@@ -179,11 +224,11 @@ body.inapp{background:#e0e0e6}
 .dash .scrim{background:rgba(30,28,50,.25)}
 .dash .sheet{background:var(--nbg);border:0;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:var(--raise);color:var(--nink)}
 .dash .sheet p,.dash .sheet label{color:var(--nmut)}
-.dash .sheet input{background:var(--nbg);border:0;box-shadow:var(--inset);color:var(--nink)}
+.dash .sheet input,.dash .sheet select{background:var(--nbg);border:0;box-shadow:var(--inset);color:var(--nink)}
 .dash .sheet .nseg button[aria-pressed='true']{color:var(--ncy)}
-@media (max-width:1000px){.kpis{grid-template-columns:repeat(2,1fr)}.dgrid{grid-template-columns:1fr}.span2{grid-column:auto}}
-@media (max-width:520px){.kpis{grid-template-columns:1fr}.dash{padding:22px 14px 40px}.nbars{gap:8px}}
-@media (prefers-reduced-motion:reduce){.dash,.dc,.rf,.ntrack i{animation:none;transition:none}}
+@media (max-width:1000px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.dgrid{grid-template-columns:1fr}.span2{grid-column:auto}}
+@media (max-width:520px){.kpis{grid-template-columns:1fr;gap:12px}.kpis:not(.three) .kpi{padding:18px}.dash{padding:22px 14px 40px}.nbars{gap:8px}.assistant-form{grid-template-columns:1fr}.assistant-form .btn{justify-self:end}.assistant-message{max-width:94%}.assistant-modes{align-items:flex-start;flex-direction:column}.assistant-modes .nseg{margin-left:0}.algorithm-series-row{grid-template-columns:48px minmax(0,1fr) 78px;gap:8px}.algorithm-row{grid-template-columns:minmax(75px,1fr) repeat(2,minmax(64px,auto));gap:8px;padding:10px}.algorithm-row .optional{display:none}}
+@media (prefers-reduced-motion:reduce){.dash,.dc,.rf,.ntrack i,.kpis:not(.three) .kpi{animation:none;transition:none}}
 .dpanel{width:auto}
 .nshell{width:min(1240px,100%);display:grid;grid-template-columns:236px minmax(0,1fr);gap:28px;align-items:start}
 .dash{place-items:start center}
@@ -233,7 +278,21 @@ body.inapp{background:#e0e0e6}
 .nform{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;align-items:end}
 .nform label{display:grid;gap:6px;font-size:12px;color:var(--nmut)}
 .nform input,.nform select{border:0;background:var(--nbg);box-shadow:var(--inset);border-radius:16px;padding:12px 16px;font:inherit;font-size:14px;color:var(--nink);width:100%}
+.nform .btn:disabled,.nform .btn:disabled:hover{opacity:.55;cursor:wait;transform:none}
+.goal-period{display:grid;gap:6px;font-size:12px;color:var(--nmut)}
+.goal-actions{grid-column:1/-1;display:flex;gap:12px;flex-wrap:wrap}
+.goal-progress{display:grid;gap:10px;margin-top:4px}
+.pimg{width:46px;height:46px;border-radius:14px;object-fit:cover;flex:none;justify-self:start;box-shadow:var(--rsm)}.nform .pimg{width:96px;height:96px}
+.photo-field{position:relative;grid-column:1 / -1;display:grid;gap:8px;font-size:12px;color:var(--nmut)}
+.nform .photo-input{position:absolute;width:1px;height:1px;padding:0;margin:0;border:0;box-shadow:none;background:none;opacity:0;pointer-events:none}
+.photo-drop{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:14px 16px;border-radius:24px;background:var(--nbg);box-shadow:var(--inset)}
+.photo-thumb{width:64px;height:64px;flex:none;display:grid;place-items:center;overflow:hidden;border-radius:18px;background:var(--nbg);box-shadow:var(--rsm);color:var(--ncy)}
+.photo-thumb img{width:100%;height:100%;object-fit:cover}
+.photo-copy{display:grid;gap:6px;min-width:0;flex:1 1 220px}
+.photo-btn{justify-self:start;display:inline-flex;align-items:center;gap:8px;padding:10px 18px;font-size:14px;font-weight:600;color:var(--nink)}
+.photo-hint{overflow-wrap:anywhere}
 .nok{color:var(--ncy)!important;font-weight:700}
+.nerr{color:#c0392b!important;font-weight:700;font-size:13px}
 .nbatch{display:flex;align-items:center;gap:16px;padding:14px 18px;border-radius:24px;background:var(--nbg);box-shadow:var(--rsm)}
 .nbatch .nrow2.sub{margin:8px 0 0;font-size:12px;gap:14px;flex-wrap:wrap}
 .chipS.late{color:#e0795f;font-weight:700}
@@ -241,7 +300,9 @@ body.inapp{background:#e0e0e6}
 @media (max-width:640px){.nbatch{flex-direction:column;align-items:stretch}}
 @keyframes fade{from{opacity:0}}
 @keyframes rise{from{opacity:0;transform:translateY(16px) scale(.98)}}
-@media (prefers-reduced-motion:reduce){.orb,.btn,.scrim,.sheet{transition:none;animation:none}}
+@keyframes fadeOut{to{opacity:0}}
+@keyframes sink{to{opacity:0;transform:translateY(12px) scale(.98)}}
+@media (prefers-reduced-motion:reduce){.orb,.btn,.scrim,.sheet,.scrim.leaving,.sheet.leaving,.sheet .hd,.sheet .err{transition:none;animation:none}}
 @media (max-width:560px){.orb{top:36%}.sub{font-size:15px}}
 </style>
 </head>
@@ -255,15 +316,15 @@ body.inapp{background:#e0e0e6}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useLayoutEffect, useRef } = React;
 
 const API = window.NEXA_API || "http://localhost:8000/api";
 const TOKEN_KEY = "nexa_token";
-async function call(path, body, token) {
+async function call(path, body, token, method) {
   let r;
   try {
     r = await fetch(API + path, {
-      method: body ? "POST" : "GET",
+      method: method || (body ? "POST" : "GET"),
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -271,8 +332,51 @@ async function call(path, body, token) {
     throw new Error("Cannot reach the server. Start the backend and try again.");
   }
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || "Something went wrong.");
+  if (!r.ok) throw new Error(data.error || (
+    r.status === 404 && path.startsWith("/assistant/")
+      ? "Assistant endpoints are unavailable. Restart Django and reload the app."
+      : "Something went wrong."
+  ));
   return data;
+}
+
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const IMAGE_MAX_SIDE = 1024;
+const IMAGE_MAX_BYTES = 1024 * 1024;
+
+const readFile = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => reject(new Error('That file could not be read.'));
+  reader.readAsDataURL(file);
+});
+
+// Small files are sent unchanged; anything larger is resized and re-encoded as JPEG.
+async function shrinkImage(file) {
+  if (!IMAGE_TYPES.includes(file.type)) throw new Error('Choose a PNG, JPEG, WebP or GIF image.');
+  const src = await readFile(file);
+  const img = new Image();
+  img.src = src;
+  try {
+    await img.decode();
+  } catch (e) {
+    throw new Error('That file is not a valid image.');
+  }
+  const side = Math.max(img.naturalWidth, img.naturalHeight);
+  if (file.size <= IMAGE_MAX_BYTES && side <= IMAGE_MAX_SIDE) return src;
+  const scale = Math.min(1, IMAGE_MAX_SIDE / side);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  for (const quality of [0.85, 0.7, 0.5]) {
+    const out = canvas.toDataURL('image/jpeg', quality);
+    if ((out.length - out.indexOf(',') - 1) * 0.75 <= IMAGE_MAX_BYTES) return out;
+  }
+  throw new Error('That photo is still too large after resizing. Try a smaller image.');
 }
 
 function Sheet({ mode, onClose, onEnter, onSwitch }) {
@@ -280,17 +384,49 @@ function Sheet({ mode, onClose, onEnter, onSwitch }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const leavingRef = useRef(false);
   const ref = useRef(null);
+  const sheetRef = useRef(null);
+  const lastH = useRef(0);
+  const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const leave = (done) => {
+    if (leavingRef.current) return;
+    leavingRef.current = true;
+    setLeaving(true);
+    setTimeout(done, reduceMotion() ? 0 : 200);
+  };
   useEffect(() => {
     ref.current && ref.current.focus();
-    const esc = (e) => e.key === "Escape" && onClose();
+    const esc = (e) => e.key === "Escape" && leave(onClose);
     window.addEventListener("keydown", esc);
     return () => window.removeEventListener("keydown", esc);
   }, []);
+  useLayoutEffect(() => {
+    const el = sheetRef.current;
+    const shown = el.style.height ? el.offsetHeight : lastH.current;
+    el.style.transition = "none";
+    el.style.height = "";
+    const to = el.offsetHeight;
+    lastH.current = to;
+    if (!shown || Math.abs(to - shown) < 1 || reduceMotion()) return;
+    el.style.height = shown + "px";
+    el.style.overflow = "hidden";
+    void el.offsetHeight;
+    el.style.transition = "height .3s cubic-bezier(.2,.7,.2,1)";
+    el.style.height = to + "px";
+  });
+  const settleHeight = (e) => {
+    if (e.target !== e.currentTarget || e.propertyName !== "height") return;
+    e.currentTarget.style.transition = "";
+    e.currentTarget.style.height = "";
+    e.currentTarget.style.overflow = "";
+  };
   const signup = mode === "signup";
   const set = (k) => (e) => setF({ ...f, [k]: k === "terms" ? e.target.checked : e.target.value });
   const submit = async (e) => {
     e.preventDefault();
+    if (leavingRef.current) return;
     setErr("");
     if (signup) {
       if (f.password !== f.password2) return setErr("The passwords do not match.");
@@ -302,18 +438,21 @@ function Sheet({ mode, onClose, onEnter, onSwitch }) {
         signup ? { username: f.username, password: f.password, password2: f.password2, accepted_terms: f.terms }
                : { username: f.username, password: f.password });
       localStorage.setItem(TOKEN_KEY, res.token);
-      onEnter(res.user);
+      leave(() => onEnter(res.user));
+      return;
     } catch (x) {
       setErr(x.message);
     }
     setBusy(false);
   };
   return (
-    <div className="scrim" onClick={onClose}>
-      <form className="sheet" role="dialog" aria-modal="true" aria-labelledby="st"
-        onClick={(e) => e.stopPropagation()} onSubmit={submit} noValidate>
-        <h2 id="st">{signup ? "Create your Nexa account" : "Welcome back"}</h2>
-        <p>{signup ? "Choose a username and password." : "Sign in with your username and password."}</p>
+    <div className={leaving ? "scrim leaving" : "scrim"} onClick={() => leave(onClose)}>
+      <form className={leaving ? "sheet leaving" : "sheet"} ref={sheetRef} role="dialog" aria-modal="true" aria-labelledby="st"
+        onClick={(e) => e.stopPropagation()} onSubmit={submit} onTransitionEnd={settleHeight} noValidate>
+        <div className="hd" key={mode}>
+          <h2 id="st">{signup ? "Create your Nexa account" : "Welcome back"}</h2>
+          <p>{signup ? "Choose a username and password." : "Sign in with your username and password."}</p>
+        </div>
         <label>Username
           <input ref={ref} type="text" required autoComplete="username" value={f.username} onChange={set("username")} />
         </label>
@@ -343,8 +482,8 @@ function Sheet({ mode, onClose, onEnter, onSwitch }) {
         )}
         {err && <p className="err" role="alert">{err}</p>}
         <div className="row">
-          <button type="button" className="btn glass" onClick={onClose}>Cancel</button>
-          <button type="submit" className="btn iri" disabled={busy}>{busy ? "Please wait…" : signup ? "Create account" : "Sign in"}</button>
+          <button type="button" className="btn glass" onClick={() => leave(onClose)}>Cancel</button>
+          <button type="submit" className={busy ? "btn iri busy" : "btn iri"} disabled={busy}>{busy ? "Please wait…" : signup ? "Create account" : "Sign in"}</button>
         </div>
         <p className="switch">
           {signup ? "Already have an account? " : "New to Nexa? "}
@@ -364,16 +503,37 @@ function smoothPath(p) {
   return d;
 }
 const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
+const preciseMoney = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const wholeOrCents = (n) => (Number.isInteger(n) ? money(n) : preciseMoney(n));
 const NOW = new Date();
 const CUR = NOW.toLocaleString('en-US', { month: 'short' });
 const CUR_NEXT = new Date(NOW.getFullYear(), NOW.getMonth() + 1, 1).toLocaleString('en-US', { month: 'short' });
-const TODAY = CUR + ' ' + NOW.getDate();
 const MONTHS = [CUR];
 const NEXT = { [CUR]: CUR_NEXT };
-const DATA = { [CUR]: { rev: 0, cogs: 0, exp: 0, series: [0, 0, 0, 0], top: [] } };
+const THIS_MONTH = `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, '0')}`;
+const PREV_MONTH = new Date(NOW.getFullYear(), NOW.getMonth() - 1, 1).toLocaleString('en-US', { month: 'short' });
+const toNum = (v) => Number(v) || 0;
+const monthLabel = (key) => new Date(key + '-01T00:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+// The series comes from settings/series/. A yearly goal is charted as monthly bars against a twelfth of the goal.
+const goalChart = (series) => {
+  const dateOf = (iso) => new Date(iso + 'T00:00:00');
+  const monthShort = (iso) => dateOf(iso).toLocaleDateString('en-US', { month: 'short' });
+  const monthYear = (iso) => dateOf(iso).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  const target = toNum(series.target);
+  const bars = (name, label) => series.buckets.map((b, i) => ({ name: name(b.start, i), label: label(b.start, i), value: toNum(b.amount) }));
+  const charts = {
+    day: { buckets: bars(shortDate, (iso, i) => (i === 0 || (i + 1) % 5 === 0 ? String(i + 1) : '')), heading: `Daily sales, ${CUR}`, actual: 'Daily sales', targetText: `Daily target ${wholeOrCents(target)}` },
+    week: { buckets: bars((iso) => `Week of ${shortDate(iso)}`, shortDate), heading: 'Weekly sales, last 8 weeks', actual: 'Weekly sales', targetText: `Weekly target ${wholeOrCents(target)}` },
+    month: { buckets: bars(monthYear, monthShort), heading: 'Monthly sales, last 6 months', actual: 'Monthly sales', targetText: `Monthly target ${wholeOrCents(target)}` },
+    year: { buckets: bars(monthYear, monthShort), heading: `Monthly sales, ${dateOf(series.buckets[0].start).getFullYear()}`, actual: 'Monthly sales', targetText: `Monthly target ${wholeOrCents(target)}` },
+  };
+  return { ...charts[series.period], current: series.current, target };
+};
 const SC = { Conservative: 0.97, Expected: 1.08, Optimistic: 1.2 };
-const CATS = [];
 const RECS = [];
+const GOAL_PERIODS = [['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
+const GOAL_WORDS = { day: 'today', week: 'this week', month: 'this month', year: 'this year' };
+const shortDate = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
 const IC = {
   rev: 'M12 3v18M16 7h-5.5a2.5 2.5 0 000 5h3a2.5 2.5 0 010 5H8',
@@ -385,6 +545,7 @@ const IC = {
   settings: 'M12 8a4 4 0 100 8 4 4 0 000-8zM19.4 15a1.7 1.7 0 00.3 1.9l.1.1-1.7 2.9-.2-.1a1.7 1.7 0 00-1.9.3l-.1.1h-3.4l-.1-.2a1.7 1.7 0 00-1.7-1l-.2.1-2.9-1.7.1-.2a1.7 1.7 0 00-.3-1.9l-.1-.1v-3.4l.2-.1a1.7 1.7 0 001-1.7l-.1-.2 1.7-2.9.2.1a1.7 1.7 0 001.9-.3l.1-.1h3.4l.1.2a1.7 1.7 0 001.7 1l.2-.1 2.9 1.7-.1.2a1.7 1.7 0 00.3 1.9l.1.1v3.4z',
   box: 'M3 7l9-4 9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10',
   receipt: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6',
+  upload: 'M12 16V4M7 9l5-5 5 5M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3',
 };
 function Ico({ d, s = 22 }) {
   return (
@@ -419,8 +580,10 @@ function Trend({ series, next }) {
     <div className='nbars' role='img' aria-label={`Weekly sales ${series.map(money).join(', ')} with a forecast of ${money(next)} for next week`}>
       {vals.map((v, i) => (
         <div className='ncol' key={i}>
-          <b>{'$' + (v / 1000).toFixed(1) + 'k'}</b>
-          <div className='ntrack'><i className={i === 4 ? 'fc' : ''} style={{ height: (v / max) * 100 + '%' }} /></div>
+          <b>{v >= 1000 ? '$' + (v / 1000).toFixed(1) + 'k' : money(v)}</b>
+          <div className='ntrack'>
+            <i className={i === 4 ? 'fc' : ''} style={{ height: (v / max) * 100 + '%' }} />
+          </div>
           <span>{labels[i]}</span>
         </div>
       ))}
@@ -428,34 +591,111 @@ function Trend({ series, next }) {
   );
 }
 
-function RecordSheet({ type, onClose, onSave }) {
+function GoalTrend({ buckets, current, target, label }) {
+  const max = Math.max(...buckets.map((b) => b.value), target, 1) * 1.08;
+  return (
+    <div className={`nbars${buckets.length > 12 ? ' nday' : ''}`} role='img' aria-label={`${label} against a target of ${wholeOrCents(target)}`}>
+      {buckets.map((b, i) => (
+        <div className='ncol' key={i} title={`${b.name}: ${preciseMoney(b.value)}`}>
+          <div className='ntrack'>
+            {i <= current && <i style={{ height: (b.value / max) * 100 + '%' }} />}
+            <em className='ngoal' style={{ bottom: `calc(4px + (100% - 8px) * ${target / max})` }} />
+          </div>
+          <span>{b.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RecordSheet({ type, onClose, onSave, products = [] }) {
   const [who, setWho] = useState('');
   const [amt, setAmt] = useState('');
   const [st, setSt] = useState('Paid');
+  const [productId, setProductId] = useState('');
+  const [qty, setQty] = useState('1');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const savingRef = useRef(false);
   const ref = useRef(null);
   useEffect(() => {
     ref.current && ref.current.focus();
-    const esc = (e) => e.key === 'Escape' && onClose();
+    const esc = (e) => e.key === 'Escape' && !savingRef.current && onClose();
     window.addEventListener('keydown', esc);
     return () => window.removeEventListener('keydown', esc);
   }, []);
   const sale = type === 'sale';
+  const product = sale ? products.find((p) => String(p[8]) === productId) || null : null;
+  const qtyNum = Number(qty);
+  const pickProduct = (id) => {
+    const item = products.find((p) => String(p[8]) === id);
+    setProductId(id);
+    setQty('1');
+    if (item) setAmt(Number(item[2]).toFixed(2));
+  };
+  const changeQty = (value) => {
+    setQty(value);
+    if (product && Number(value) > 0) setAmt((Number(product[2]) * Number(value)).toFixed(2));
+  };
+  const submit = async (event) => {
+    event.preventDefault();
+    const amount = parseFloat(amt);
+    if (!(amount > 0) || savingRef.current) return;
+    if (product) {
+      if (!Number.isInteger(qtyNum) || qtyNum < 1) {
+        setError('Quantity must be a whole number of at least 1.');
+        return;
+      }
+      if (qtyNum > product[4]) {
+        setError(`Only ${product[4]} ${product[0]} in stock.`);
+        return;
+      }
+    }
+    savingRef.current = true;
+    setSaving(true);
+    setError('');
+    try {
+      await onSave({ who: who.trim() || (sale ? 'Walk-in' : 'General'), a: amount, st, product, qty: qtyNum });
+    } catch (saveError) {
+      savingRef.current = false;
+      setSaving(false);
+      setError(saveError.message);
+    }
+  };
   return (
-    <div className='scrim' onClick={onClose}>
+    <div className='scrim' onClick={() => !saving && onClose()}>
       <form className='sheet' role='dialog' aria-modal='true' aria-labelledby='rt' onClick={(e) => e.stopPropagation()}
-        onSubmit={(e) => { e.preventDefault(); const a = parseFloat(amt); if (a > 0) onSave({ who: who.trim() || (sale ? 'Walk-in' : 'General'), a, st }); }}>
+        onSubmit={submit}>
         <h2 id='rt'>{sale ? 'Record a sale' : 'Record an expense'}</h2>
         <p>{sale ? 'It is added to this month and updates your totals.' : 'It is added to this month and comes off your profit.'}</p>
-        <label>{sale ? 'Customer' : 'Category'}<input ref={ref} type='text' value={who} onChange={(e) => setWho(e.target.value)} placeholder={sale ? 'Walk-in' : 'Utilities'} /></label>
-        <label>Amount (USD)<input type='number' min='0' step='0.01' required value={amt} onChange={(e) => setAmt(e.target.value)} /></label>
+        <label>{sale ? 'Customer' : 'Category'}<input ref={ref} type='text' value={who} onChange={(e) => setWho(e.target.value)} placeholder={sale ? 'Walk-in' : 'Utilities'} disabled={saving} /></label>
+        {sale && (
+          <label>Product
+            <select value={productId} onChange={(e) => pickProduct(e.target.value)} disabled={saving}>
+              <option value=''>No product</option>
+              {products.map((p) => (
+                <option key={p[8]} value={String(p[8])} disabled={p[4] <= 0}>
+                  {p[4] > 0 ? `${p[0]} · ${p[4]} in stock` : `${p[0]} · out of stock`}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {product && (
+          <label>{`Quantity · ${product[4]} in stock`}
+            <input type='number' min='1' max={product[4]} step='1' required value={qty} onChange={(e) => changeQty(e.target.value)} disabled={saving} />
+          </label>
+        )}
+        <label>Amount (USD)<input type='number' min='0' step='0.01' required value={amt} onChange={(e) => setAmt(e.target.value)} disabled={saving} /></label>
         {sale && (
           <div className='nseg' role='group' aria-label='Payment status' style={{ marginBottom: 12 }}>
-            {['Paid', 'Pending'].map((s) => <button type='button' key={s} aria-pressed={st === s} onClick={() => setSt(s)}>{s}</button>)}
+            {['Paid', 'Pending'].map((s) => <button type='button' key={s} aria-pressed={st === s} onClick={() => setSt(s)} disabled={saving}>{s}</button>)}
           </div>
         )}
+        {error && <p className='err' role='alert'>{error}</p>}
         <div className='row'>
-          <button type='button' className='btn glass' onClick={onClose}>Cancel</button>
-          <button type='submit' className='btn iri'>Save</button>
+          <button type='button' className='btn glass' onClick={onClose} disabled={saving}>Cancel</button>
+          <button type='submit' className='btn iri' disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
         </div>
       </form>
     </div>
@@ -479,14 +719,29 @@ const NAV = [
 
 const BATCHES0 = [];
 
+// Maps API rows to the tuple shapes the dashboard keeps in state.
+const productRow = (p) => [p.name, p.category, Number(p.price), Number(p.cost), 0, p.target_stock, p.supplier || '', p.image || '', p.id];
+const batchRow = (b) => [b.id, b.product, b.quantity_received, b.quantity_left, b.age_days, Number(b.unit_cost), b.supplier || ''];
+const dateLabel = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleString('en-US', { month: 'short' }) + ' ' + d.getDate();
+};
+const purchaseRow = (p) => [
+  `${p.product} × ${p.quantity}`, p.supplier || '', Math.round(Number(p.total)), p.status,
+  dateLabel(p.status === 'Delivered' ? p.delivered_on : p.ordered_on), p.product, p.quantity, p.id,
+];
+
 function Dashboard({ dark, setTheme, onExit }) {
   const [nav, setNav] = useState('overview');
   const [m, setM] = useState(CUR);
   const [scn, setScn] = useState('Expected');
   const [pri, setPri] = useState('All');
   const [done, setDone] = useState({});
-  const [ordered, setOrdered] = useState({});
-  const [extra, setExtra] = useState({ rev: 0, cogs: 0, exp: 0 });
+  const [dash, setDash] = useState(null);
+  const [dashError, setDashError] = useState('');
+  const [expenseSummary, setExpenseSummary] = useState({ items: [], by_category: [] });
+  const [reportRows, setReportRows] = useState([]);
   const [sales, setSales] = useState([]);
   const [expList, setExpList] = useState([]);
   const [purchases, setPurchases] = useState([]);
@@ -499,76 +754,268 @@ function Dashboard({ dark, setTheme, onExit }) {
   const [batches, setBatches] = useState(BATCHES0);
   const [limit, setLimit] = useState(45);
   const [disc, setDisc] = useState({});
-  const [rf, setRf] = useState({ p: '__new', q: '', c: '', s: '', name: '', price: '' });
+  const [rf, setRf] = useState({ p: '__new', q: '', c: '', s: '', name: '', price: '', img: '', imgName: '' });
   const [rmsg, setRmsg] = useState('');
-  const nextId = useRef(100);
+  const [stockMsg, setStockMsg] = useState('');
+  const [receiveBusy, setReceiveBusy] = useState(false);
+  const receiveLock = useRef(false);
+  const imgRef = useRef(null);
+  const [assistantQuestion, setAssistantQuestion] = useState('');
+  const [assistantMessages, setAssistantMessages] = useState([]);
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantError, setAssistantError] = useState('');
+  const assistantLock = useRef(false);
+  const [assistantMode, setAssistantMode] = useState('algorithm');
+  const [algorithmType, setAlgorithmType] = useState('profitability');
+  const [algorithmResult, setAlgorithmResult] = useState(null);
+  const [algorithmBusy, setAlgorithmBusy] = useState(false);
+  const [algorithmError, setAlgorithmError] = useState('');
+  const algorithmLock = useRef(false);
+  const orderLock = useRef(false);
+  const [goalData, setGoalData] = useState(null);
+  const [goalChartData, setGoalChartData] = useState(null);
+  const [goalForm, setGoalForm] = useState({ amount: '', period: 'month' });
+  const [goalMsg, setGoalMsg] = useState({ text: '', error: false });
+  const [goalBusy, setGoalBusy] = useState(false);
+  const goalLock = useRef(false);
 
-  const base = DATA[m], add = m === CUR ? extra : { rev: 0, cogs: 0, exp: 0 };
-  const rev = base.rev + add.rev, cogs = base.cogs + add.cogs, exp = base.exp + add.exp;
-  const gross = rev - cogs, net = gross - exp;
-  const pm = MONTHS[MONTHS.indexOf(m) - 1], prev = pm && DATA[pm];
-  const delta = (cur, old) => (old ? ((cur / old - 1) * 100 >= 0 ? '+' : '') + ((cur / old - 1) * 100).toFixed(1) + '% vs ' + pm : 'First month on record');
-  const prevGross = prev && prev.rev - prev.cogs, prevNet = prev && prevGross - prev.exp;
-  const series = base.series.map((v, i) => (i === 3 ? v + add.rev : v));
+  useEffect(() => {
+    const token = localStorage.getItem(TOKEN_KEY);
+    Promise.all([call('/products/', null, token), call('/batches/', null, token), call('/purchases/', null, token)])
+      .then(([productList, batchList, orderList]) => {
+        setProdList(productList.map(productRow));
+        setBatches(batchList.map(batchRow));
+        setPurchases(orderList.map(purchaseRow));
+      })
+      .catch((error) => setStockMsg(error.message));
+  }, []);
+
+  const loadFigures = () => {
+    const token = localStorage.getItem(TOKEN_KEY);
+    return Promise.all([
+      call(`/dashboard/?month=${THIS_MONTH}`, null, token),
+      call(`/expenses/?month=${THIS_MONTH}`, null, token),
+      call('/sales/', null, token),
+      call('/reports/', null, token),
+    ])
+      .then(([figures, expenses, saleList, reports]) => {
+        setDash(figures);
+        setExpenseSummary(expenses);
+        setExpList(expenses.items.map((e) => [e.category, toNum(e.amount), shortDate(e.date)]));
+        setSales(saleList.map((s) => [s.customer, toNum(s.amount), s.status, shortDate(s.date), s.product || '', s.product ? s.quantity : 0]));
+        setReportRows(reports);
+        setDashError('');
+      })
+      .catch((error) => setDashError(error.message));
+  };
+  useEffect(() => { loadFigures(); }, []);
+
+  const applyGoal = (data) => {
+    setGoalData(data);
+    setGoalForm({ amount: data.revenue_goal == null ? '' : String(Number(data.revenue_goal)), period: data.goal_period });
+  };
+  const persistGoal = async (body, okText) => {
+    if (goalLock.current) return;
+    goalLock.current = true;
+    setGoalBusy(true);
+    setGoalMsg({ text: '', error: false });
+    try {
+      await call('/settings/', body, localStorage.getItem(TOKEN_KEY), 'PATCH');
+      await loadGoal();
+      setGoalMsg({ text: okText, error: false });
+    } catch (error) {
+      setGoalMsg({ text: error.message, error: true });
+    } finally {
+      goalLock.current = false;
+      setGoalBusy(false);
+    }
+  };
+  const saveGoal = (e) => {
+    e.preventDefault();
+    const amount = parseFloat(goalForm.amount);
+    if (!(amount > 0)) return setGoalMsg({ text: 'Enter a sales goal above zero.', error: true });
+    persistGoal({ revenue_goal: amount, goal_period: goalForm.period }, `Goal saved: ${preciseMoney(amount)} per ${goalForm.period}.`);
+  };
+  const clearGoal = () => persistGoal({ revenue_goal: null }, 'Revenue goal cleared.');
+
+  const loadGoal = () => Promise.all([
+    call('/settings/', null, localStorage.getItem(TOKEN_KEY)),
+    call('/settings/series/', null, localStorage.getItem(TOKEN_KEY)),
+  ]).then(([settings, series]) => {
+    applyGoal(settings);
+    setGoalChartData(series);
+  });
+  useEffect(() => {
+    if (nav !== 'settings' && nav !== 'overview') return;
+    loadGoal().catch((error) => {
+      if (nav === 'settings') setGoalMsg({ text: error.message, error: true });
+    });
+  }, [nav]);
+
+  const D = dash || {};
+  const rev = toNum(D.revenue), exp = toNum(D.expenses), gross = toNum(D.gross_profit), net = toNum(D.net_profit);
+  const change = (key) => {
+    if (!dash) return 'Loading figures';
+    const v = D.change_vs_previous_pct[key];
+    return v == null ? `No ${PREV_MONTH} figures to compare` : `${v >= 0 ? '+' : ''}${Number(v).toFixed(1)}% vs ${PREV_MONTH}`;
+  };
+  const series = (D.weekly_sales || [0, 0, 0, 0]).map(toNum);
+  const goalSeries = goalChartData ? goalChart(goalChartData) : null;
+  const fc = (D.forecast && D.forecast[scn]) || { next_week: 0, next_month: 0 };
   const factor = SC[scn];
-  const nextWeek = Math.round(series[3] * factor), nextTotal = Math.round(rev * factor);
-  const maxUnits = base.top.length ? base.top[0][1] : 1;
-  const cats = CATS;
+  const nextWeek = Math.round(toNum(fc.next_week)), nextTotal = Math.round(toNum(fc.next_month));
+  const top = (D.top_products || []).map((p) => [p.name, toNum(p.units)]);
+  const maxUnits = top.length ? top[0][1] : 1;
+  const cats = (expenseSummary.by_category || []).map((c) => [c.category, toNum(c.total)]);
   const maxCat = Math.max(...cats.map((c) => c[1]), 1);
+  const pendingCount = toNum(D.pending_payments && D.pending_payments.count);
+  const pendingTotal = toNum(D.pending_payments && D.pending_payments.total);
   const recs = RECS.filter((r) => pri === 'All' || r.pri === pri);
-  const sold = Object.fromEntries(base.top);
+  const sold = Object.fromEntries(top);
   const stockOf = (n) => batches.filter((b) => b[1] === n).reduce((a, b) => a + b[3], 0);
-  const prods = prodList.map((p) => [p[0], p[1], p[2], p[3], stockOf(p[0]), p[5], p[6]]);
+  const ordered = Object.fromEntries(purchases.filter((x) => x[3] === 'Ordered').map((x) => [x[5], true]));
+  const prods = prodList.map((p) => [p[0], p[1], p[2], p[3], stockOf(p[0]), p[5], p[6], p[7] || '', p[8]]);
   const low = prods.filter((p) => p[5] > 0 && p[4] / p[5] < 0.35 && !ordered[p[0]]);
   const slow = batches.filter((b) => b[3] > 0 && b[4] > limit).sort((a, b) => b[4] - a[4]);
   const pend = sales.filter((s) => s[2] === 'Pending');
 
-  const save = ({ who, a, st }) => {
+  const save = async ({ who, a, st, product, qty }) => {
+    const token = localStorage.getItem(TOKEN_KEY);
     if (form === 'sale') {
-      setSales((s) => [[who, a, st, TODAY], ...s]);
-      setExtra((x) => ({ ...x, rev: x.rev + a, cogs: x.cogs + a * 0.6 }));
+      const body = { customer: who, amount: a, status: st };
+      if (product) Object.assign(body, { product_id: product[8], quantity: qty });
+      await call('/sales/', body, token);
+      loadFigures();
+      loadGoal().catch(() => {});
+      if (product) await refreshStock();
     } else {
-      setExpList((l) => [[who, a, TODAY], ...l]);
-      setExtra((x) => ({ ...x, exp: x.exp + a }));
+      await call('/expenses/', { category: who, amount: a }, token);
+      loadFigures();
     }
     setM(CUR); setForm(null);
   };
-  const reorder = (p) => {
-    const qty = p[5] - p[4];
-    setPurchases((l) => [[`${p[0]} × ${qty}`, p[6], Math.round(qty * p[3]), 'Ordered', TODAY, p[0], qty], ...l]);
-    setOrdered((o) => ({ ...o, [p[0]]: true }));
+  const askAssistant = async (event) => {
+    event.preventDefault();
+    const question = assistantQuestion.trim();
+    if (!question || assistantLock.current) return;
+    assistantLock.current = true;
+    setAssistantQuestion('');
+    setAssistantError('');
+    setAssistantMessages((messages) => [...messages, { role: 'user', text: question }]);
+    setAssistantBusy(true);
+    try {
+      const month = `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, '0')}`;
+      const result = await call('/assistant/chat/', { question, month }, localStorage.getItem(TOKEN_KEY));
+      setAssistantMessages((messages) => [...messages, { role: 'assistant', text: result.answer }]);
+    } catch (error) {
+      setAssistantError(error.message);
+    } finally {
+      assistantLock.current = false;
+      setAssistantBusy(false);
+    }
   };
-  const addBatch = (prod, qty, cost, sup) => setBatches((b) => [[nextId.current++, prod, qty, qty, 0, cost, sup], ...b]);
-  const receiveOrder = (i) => {
+  const runAlgorithm = async () => {
+    if (algorithmLock.current) return;
+    algorithmLock.current = true;
+    setAlgorithmBusy(true);
+    setAlgorithmError('');
+    setAlgorithmResult(null);
+    try {
+      const month = `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, '0')}`;
+      const result = await call('/assistant/analyze/', { analysis: algorithmType, month }, localStorage.getItem(TOKEN_KEY));
+      setAlgorithmResult(result);
+    } catch (error) {
+      setAlgorithmError(error.message);
+    } finally {
+      algorithmLock.current = false;
+      setAlgorithmBusy(false);
+    }
+  };
+  const refreshStock = async () => {
+    const token = localStorage.getItem(TOKEN_KEY);
+    try {
+      const [batchList, orderList] = await Promise.all([call('/batches/', null, token), call('/purchases/', null, token)]);
+      setBatches(batchList.map(batchRow));
+      setPurchases(orderList.map(purchaseRow));
+    } catch (error) {
+      setStockMsg(error.message);
+    }
+  };
+  const reorder = async (p) => {
+    if (orderLock.current) return;
+    orderLock.current = true;
+    try {
+      await call('/purchases/', { product_id: p[8], quantity: Math.max(1, p[5] - p[4]), unit_cost: p[3] }, localStorage.getItem(TOKEN_KEY));
+      setStockMsg('');
+      await refreshStock();
+    } catch (error) {
+      setStockMsg(error.message);
+    } finally {
+      orderLock.current = false;
+    }
+  };
+  const receiveOrder = async (i) => {
     const pu = purchases[i];
-    addBatch(pu[5], pu[6], pu[2] / pu[6], pu[1]);
-    setPurchases((l) => l.map((x, j) => (j === i ? [x[0], x[1], x[2], 'Delivered', TODAY, x[5], x[6]] : x)));
-    setOrdered((o) => ({ ...o, [pu[5]]: false }));
-    setRmsg(`${pu[6]} × ${pu[5]} received into stock.`);
+    if (orderLock.current) return;
+    orderLock.current = true;
+    try {
+      await call(`/purchases/${pu[7]}/receive/`, {}, localStorage.getItem(TOKEN_KEY));
+      await refreshStock();
+      setRmsg(`${pu[6]} × ${pu[5]} received into stock.`);
+    } catch (error) {
+      setRmsg(error.message);
+    } finally {
+      orderLock.current = false;
+    }
   };
-  const submitReceive = (e) => {
+  const submitReceive = async (e) => {
     e.preventDefault();
+    if (receiveLock.current) return;
     const qty = parseInt(rf.q, 10), cost = parseFloat(rf.c), price = parseFloat(rf.price);
     if (!(qty > 0) || !(cost > 0)) return setRmsg('Enter a quantity and a unit cost above zero.');
     if (!rf.s.trim()) return setRmsg('Enter the supplier name.');
+    const supplier = rf.s.trim();
+    const isNew = rf.p === '__new';
+    const existing = isNew ? null : prodList.find((p) => p[0] === rf.p);
+    if (!isNew && !existing) return setRmsg('Choose a product from the list.');
     let name = rf.p;
-    if (rf.p === '__new') {
+    const body = { quantity: qty, unit_cost: cost, supplier };
+    if (isNew) {
       name = rf.name.trim();
       if (!name || !(price > 0)) return setRmsg('Give the new product a name and a selling price.');
       if (prodList.some((p) => p[0].toLowerCase() === name.toLowerCase())) return setRmsg('That product already exists. Choose it from the list.');
-      setProdList((l) => [...l, [name, 'General', price, cost, 0, 60, rf.s]]);
+      Object.assign(body, { new_product_name: name, price });
+    } else {
+      body.product_id = existing[8];
     }
-    addBatch(name, qty, cost, rf.s);
-    setPurchases((l) => [[`${name} × ${qty}`, rf.s, Math.round(qty * cost), 'Delivered', TODAY, name, qty], ...l]);
-    setRf({ ...rf, p: name, q: '', name: '', price: '' });
-    setRmsg(`${qty} × ${name} added to stock.`);
+    if (rf.img) body.image = rf.img;
+    receiveLock.current = true;
+    setReceiveBusy(true);
+    try {
+      const { product } = await call('/receive/', body, localStorage.getItem(TOKEN_KEY));
+      setProdList((l) => (l.some((p) => p[8] === product.id) ? l.map((p) => (p[8] === product.id ? productRow(product) : p)) : [...l, productRow(product)]));
+      await refreshStock();
+      setRf((f) => ({ ...f, p: name, q: '', name: '', price: '', img: '', imgName: '' }));
+      if (imgRef.current) imgRef.current.value = '';
+      setRmsg(`${qty} × ${name} added to stock.`);
+    } catch (error) {
+      setRmsg(error.message);
+    } finally {
+      receiveLock.current = false;
+      setReceiveBusy(false);
+    }
   };
   const pc = (a) => (rev > 0 ? (a / rev) * 100 : 0);
+  const goalProgress = goalData && goalData.progress;
+  const goalPct = goalProgress ? goalProgress.percent : null;
+  const goalCap = goalProgress
+    ? `of the ${money(Number(goalProgress.goal))} goal ${GOAL_WORDS[goalProgress.period]}`
+    : 'Set a revenue goal in Settings';
   const kpis = [
-    ['Revenue', rev, delta(rev, prev && prev.rev), (rev / 30000) * 100, IC.rev, 'of the $30k goal'],
-    ['Gross profit', gross, delta(gross, prevGross), pc(gross), IC.gross, 'margin'],
-    ['Expenses', exp, delta(exp, prev && prev.exp), pc(exp), IC.exp, 'of revenue'],
-    ['Net profit', net, delta(net, prevNet), pc(net), IC.net, 'margin'],
+    ['Revenue', rev, change('revenue'), goalPct, IC.rev, goalCap],
+    ['Gross profit', gross, change('gross_profit'), pc(gross), IC.gross, 'margin'],
+    ['Expenses', exp, change('expenses'), pc(exp), IC.exp, 'of revenue'],
+    ['Net profit', net, change('net_profit'), pc(net), IC.net, 'margin'],
   ];
   const Month = () => (
     <div className='nseg' role='group' aria-label='Month'>
@@ -580,25 +1027,35 @@ function Dashboard({ dark, setTheme, onExit }) {
   const views = {
     overview: () => (
       <>
+        {dashError && <p className='nerr' role='alert'>{dashError}</p>}
         <div className='kpis'>
           {kpis.map(([l, v, d, p, ic, cap]) => (
             <div className='kpi' key={l}>
               <Ring pct={p} icon={ic} />
               <div><span className='dlab'>{l}</span><b>{money(v)}</b>
-                <small>{Math.round(Math.max(0, Math.min(999, p)))}% {cap}</small><small className='kd'>{d}</small></div>
+                <small>{p == null ? cap : `${Math.round(Math.max(0, Math.min(999, p)))}% ${cap}`}</small><small className='kd'>{d}</small></div>
             </div>
           ))}
         </div>
         <div className='dgrid'>
           <section className='dc span2'>
-            <Title ic={IC.gross} right={<span className='nleg'><i />Actual<i className='fc' />Forecast</span>}>Sales by week, {m}</Title>
-            <Trend series={series} next={nextWeek} key={m + scn + extra.rev} />
+            {goalSeries == null ? (
+              <>
+                <Title ic={IC.gross} right={<span className='nleg'><i />Actual<i className='fc' />Forecast</span>}>Sales by week, {m}</Title>
+                <Trend series={series} next={nextWeek} key={m + scn + rev} />
+              </>
+            ) : (
+              <>
+                <Title ic={IC.gross} right={<span className='nleg'><i />{goalSeries.actual}<i className='gl' />{goalSeries.targetText}</span>}>{goalSeries.heading}</Title>
+                <GoalTrend key={goalData.goal_period} buckets={goalSeries.buckets} current={goalSeries.current} target={goalSeries.target} label={goalSeries.heading} />
+              </>
+            )}
           </section>
           <section className='dc'>
             <Title ic={IC.star}>Best sellers, {m}</Title>
             <ol className='nlist'>
-              {base.top.length === 0 && <li><p>No sales recorded yet.</p></li>}
-              {base.top.slice(0, 4).map(([n, u], i) => (
+              {top.length === 0 && <li><p>No sales recorded yet.</p></li>}
+              {top.slice(0, 4).map(([n, u], i) => (
                 <li key={n}><div className='nrow2'><span>{n}{i === 0 && <em className='ntag'>Top seller</em>}</span><span>{u} sold</span></div>
                   <div className='dbar'><i style={{ width: (u / maxUnits) * 100 + '%' }} /></div></li>
               ))}
@@ -606,7 +1063,7 @@ function Dashboard({ dark, setTheme, onExit }) {
           </section>
           {[
             ['stock', IC.box, 'Needs attention', `${low.length} low on stock and ${slow.length} batch${slow.length === 1 ? '' : 'es'} sitting longer than ${limit} days.`, 'Open stock'],
-            ['sales', IC.receipt, 'Waiting on payment', `${pend.length} sale${pend.length === 1 ? '' : 's'} pending, worth ${money(pend.reduce((a, s) => a + s[1], 0))}.`, 'Open sales'],
+            ['sales', IC.receipt, 'Waiting on payment', `${pendingCount} sale${pendingCount === 1 ? '' : 's'} pending, worth ${money(pendingTotal)}.`, 'Open sales'],
             ['insights', IC.bulb, 'Top idea', RECS.length ? RECS[0].text : 'Ideas will appear once you have recorded some activity.', 'See all ideas'],
           ].map(([id, ic, t, txt, btn]) => (
             <section className='dc' key={id}>
@@ -619,14 +1076,48 @@ function Dashboard({ dark, setTheme, onExit }) {
     ),
 
     settings: () => (
-      <section className='dc'>
-        <Title ic={IC.settings}>Appearance</Title>
-        <p>Choose the theme for your dashboard.</p>
-        <div className='nseg' role='group' aria-label='Color theme'>
-          <button aria-pressed={!dark} onClick={() => setTheme(false)}>Light</button>
-          <button aria-pressed={dark} onClick={() => setTheme(true)}>Dark</button>
-        </div>
-      </section>
+      <div className='dgrid'>
+        <section className='dc'>
+          <Title ic={IC.settings}>Appearance</Title>
+          <p>Choose the theme for your dashboard.</p>
+          <div className='nseg' role='group' aria-label='Color theme'>
+            <button aria-pressed={!dark} onClick={() => setTheme(false)}>Light</button>
+            <button aria-pressed={dark} onClick={() => setTheme(true)}>Dark</button>
+          </div>
+        </section>
+        <section className='dc span2'>
+          <Title ic={IC.gross}>Revenue goal</Title>
+          <p>Set a sales target for a day, week, month or year. Progress counts every sale in the period, paid and pending.</p>
+          <form className='nform' onSubmit={saveGoal}>
+            <label>Sales goal (USD)
+              <input type='number' min='0' step='0.01' value={goalForm.amount} onChange={(e) => setGoalForm((f) => ({ ...f, amount: e.target.value }))} />
+            </label>
+            <div className='goal-period'>
+              <span>Goal period</span>
+              <div className='nseg' role='group' aria-label='Goal period'>
+                {GOAL_PERIODS.map(([v, label]) => (
+                  <button key={v} type='button' aria-pressed={goalForm.period === v} onClick={() => setGoalForm((f) => ({ ...f, period: v }))}>{label}</button>
+                ))}
+              </div>
+            </div>
+            <div className='goal-actions'>
+              <button type='submit' className='btn iri nbtn' disabled={goalBusy}>{goalBusy ? 'Saving…' : 'Save goal'}</button>
+              <button type='button' className='btn glass' disabled={goalBusy || !goalData || goalData.revenue_goal == null} onClick={clearGoal}>Clear goal</button>
+            </div>
+          </form>
+          {goalMsg.text && <p className={goalMsg.error ? 'nerr' : 'nok'} role={goalMsg.error ? 'alert' : 'status'}>{goalMsg.text}</p>}
+          {goalData && goalData.progress && (
+            <div className='goal-progress'>
+              <div className='nrow2'>
+                <span>{preciseMoney(Number(goalData.progress.revenue))} of {preciseMoney(Number(goalData.progress.goal))} {GOAL_WORDS[goalData.progress.period]}</span>
+                <span>{goalData.progress.percent}%</span>
+              </div>
+              <Bar pct={goalData.progress.percent} />
+              <p>{Number(goalData.progress.remaining) > 0 ? `${preciseMoney(Number(goalData.progress.remaining))} left to reach the goal.` : 'Goal reached.'} Period: {shortDate(goalData.progress.start)} to {shortDate(goalData.progress.end)}.</p>
+            </div>
+          )}
+        </section>
+      </div>
     ),
 
     sales: () => {
@@ -648,9 +1139,9 @@ function Dashboard({ dark, setTheme, onExit }) {
               </div>
             </div>
             {list.length === 0 && <p>No sales match your search.</p>}
-            {list.map(([w, a, s, d], i) => (
+            {list.map(([w, a, s, d, p, q], i) => (
               <div className='npill' key={w + i + d}>
-                <span className='nin xs'>{w[0]}</span><span>{w}</span><span className='nmut'>{d}</span><b>{money(a)}</b>
+                <span className='nin xs'>{w[0]}</span><span>{w}</span><span className='nmut'>{p ? `${d} · ${p} × ${q}` : d}</span><b>{money(a)}</b>
                 <span className={'chipS ' + (s === 'Paid' ? 'paid' : 'pend')}>{s}</span>
               </div>
             ))}
@@ -685,9 +1176,11 @@ function Dashboard({ dark, setTheme, onExit }) {
       <div className='dgrid'>
         <section className='dc span2'>
           <Title ic={IC.box}>Stock levels</Title>
+          {stockMsg && <p className='nok' role='status'>{stockMsg}</p>}
           {prods.length === 0 && <p>No products yet. Add one on the Receive stock page.</p>}
           {prods.map((p) => (
             <div className='nstock row' key={p[0]}>
+              {p[7] ? <img className='pimg' src={p[7]} alt={p[0]} /> : <span className='nin'>{p[0][0]}</span>}
               <div className='grow'><div className='nrow2'><span>{p[0]}</span><span>{p[4]} of {p[5]}</span></div><Bar pct={(p[4] / p[5]) * 100} /></div>
               <button className='dmini' disabled={ordered[p[0]]} onClick={() => reorder(p)}>{ordered[p[0]] ? 'Ordered ✓' : 'Reorder'}</button>
             </div>
@@ -714,7 +1207,27 @@ function Dashboard({ dark, setTheme, onExit }) {
       const recent = [...batches].sort((a, b) => a[4] - b[4]).slice(0, 6);
       const isNew = rf.p === '__new';
       const set = (k) => (e) => setRf({ ...rf, [k]: e.target.value });
-      const pick = (e) => { const v = e.target.value; const pr = prodList.find((p) => p[0] === v); setRf({ ...rf, p: v, c: pr ? String(pr[3]) : rf.c, s: pr ? pr[6] : rf.s }); };
+      const current = isNew ? null : prodList.find((p) => p[0] === rf.p);
+      const preview = rf.img || (current && current[7]) || '';
+      const pick = (e) => {
+        const v = e.target.value;
+        const pr = prodList.find((p) => p[0] === v);
+        setRf({ ...rf, p: v, c: pr ? String(pr[3]) : rf.c, s: pr ? pr[6] : rf.s, img: '', imgName: '' });
+        if (imgRef.current) imgRef.current.value = '';
+      };
+      const pickImage = async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return setRf((f) => ({ ...f, img: '', imgName: '' }));
+        try {
+          const img = await shrinkImage(file);
+          setRf((f) => ({ ...f, img, imgName: file.name }));
+          setRmsg('');
+        } catch (error) {
+          e.target.value = '';
+          setRf((f) => ({ ...f, img: '', imgName: '' }));
+          setRmsg(error.message);
+        }
+      };
       return (
         <div className='dgrid'>
           <section className='dc span2'>
@@ -734,9 +1247,23 @@ function Dashboard({ dark, setTheme, onExit }) {
                 <input type='text' list='supl' value={rf.s} onChange={set('s')} />
                 <datalist id='supl'>{[...new Set(batches.map((b) => b[6]))].map((n) => <option key={n} value={n} />)}</datalist>
               </label>
-              <button type='submit' className='btn iri nbtn'>Add to stock</button>
+              <div className='photo-field'>
+                <span>Product photo (optional)</span>
+                <input ref={imgRef} type='file' className='photo-input' tabIndex={-1} aria-hidden='true' accept='image/png,image/jpeg,image/webp,image/gif' onChange={pickImage} />
+                <div className='photo-drop'>
+                  <span className='photo-thumb'>{preview ? <img src={preview} alt='Product photo preview' /> : <Ico d={IC.upload} s={24} />}</span>
+                  <div className='photo-copy'>
+                    <button type='button' className='btn glass photo-btn' disabled={receiveBusy} aria-describedby='photo-hint' onClick={() => imgRef.current && imgRef.current.click()}>
+                      <Ico d={IC.upload} s={16} />Upload image
+                    </button>
+                    <span id='photo-hint' className='photo-hint'>{rf.imgName || (current && current[7] ? 'Current photo. Upload a new image to replace it.' : 'Choose a PNG, JPG, WebP or GIF up to 1 MB.')}</span>
+                  </div>
+                </div>
+              </div>
+              <button type='submit' className='btn iri nbtn' disabled={receiveBusy}>{receiveBusy ? 'Saving…' : 'Add to stock'}</button>
             </form>
             {rmsg && <p className='nok' role='status'>{rmsg}</p>}
+            {stockMsg && <p className='nok' role='status'>{stockMsg}</p>}
           </section>
           <section className='dc'>
             <Title ic={IC.box}>Orders on the way</Title>
@@ -821,11 +1348,10 @@ function Dashboard({ dark, setTheme, onExit }) {
       <div className='dgrid'>
         <section className='dc span2'>
           <Title ic={IC.exp} right={<b className='dbig sm'>{money(exp)}</b>}>Expenses by category, {m}</Title>
-          {cats.length === 0 && add.exp === 0 && <p>No expenses recorded yet.</p>}
+          {cats.length === 0 && <p>No expenses recorded yet.</p>}
           {cats.map(([n, v]) => (
             <div className='nstock' key={n}><div className='nrow2'><span>{n}</span><span>{money(v)}</span></div><Bar pct={(v / maxCat) * 100} /></div>
           ))}
-          {add.exp > 0 && <div className='nstock'><div className='nrow2'><span>Added by you</span><span>{money(add.exp)}</span></div><Bar pct={(add.exp / maxCat) * 100} /></div>}
         </section>
         <section className='dc'>
           <Title ic={IC.receipt}>Added by you</Title>
@@ -857,17 +1383,156 @@ function Dashboard({ dark, setTheme, onExit }) {
         <Title ic={NAV.find((x) => x[0] === 'reports')[2]}>Monthly reports</Title>
         <div className='nscroll'><div className='ntable'>
           <div className='nth r'><span>Period</span><span>Revenue</span><span>Expenses</span><span>Gross profit</span><span>Net profit</span></div>
-          {MONTHS.map((x) => {
-            const d = DATA[x], a = x === CUR ? extra : { rev: 0, cogs: 0, exp: 0 };
-            const r = d.rev + a.rev, e = d.exp + a.exp, g = r - d.cogs - a.cogs;
-            return <div className='ntr r' key={x}><b>{x} 2026</b><span>{money(r)}</span><span>{money(e)}</span><span>{money(g)}</span><span className='ncy'>{money(g - e)}</span></div>;
-          })}
+          {reportRows.slice().reverse().map((r) => (
+            <div className='ntr r' key={r.month}><b>{monthLabel(r.month)}</b><span>{money(toNum(r.revenue))}</span><span>{money(toNum(r.expenses))}</span><span>{money(toNum(r.gross_profit))}</span><span className='ncy'>{money(toNum(r.net_profit))}</span></div>
+          ))}
         </div></div>
       </section>
     ),
 
     insights: () => (
       <div className='dgrid'>
+        <section className='dc assistant-chat'>
+          <div className='assistant-modes'>
+            <div>
+              <Title ic={IC.bulb}>Financial intelligence</Title>
+              <p>Choose how you want to analyse your business.</p>
+            </div>
+            <div className='nseg' role='group' aria-label='Assistant mode'>
+              <button type='button' aria-pressed={assistantMode === 'algorithm'} onClick={() => setAssistantMode('algorithm')}>Algorithms</button>
+              <button type='button' aria-pressed={assistantMode === 'ai'} onClick={() => setAssistantMode('ai')}>AI assistant</button>
+            </div>
+          </div>
+          {assistantMode === 'algorithm' ? (
+            <>
+              <p>Verified calculations and rule-based insights run on your data—no AI connection required.</p>
+              <div className='analysis-options' role='group' aria-label='Choose an algorithm analysis'>
+                {[
+                  ['profitability', 'Profitability'],
+                  ['sales_trends', 'Sales trends'],
+                  ['expense_analysis', 'Expense analysis'],
+                  ['product_rankings', 'Product rankings'],
+                  ['stock_cover', 'Stock cover'],
+                ].map(([id, label]) => (
+                  <button className='dmini' type='button' key={id} aria-pressed={algorithmType === id}
+                    onClick={() => { setAlgorithmType(id); setAlgorithmResult(null); setAlgorithmError(''); }}>{label}</button>
+                ))}
+                <button className='btn iri nbtn' type='button' onClick={runAlgorithm} disabled={algorithmBusy}>
+                  {algorithmBusy ? 'Analysing…' : 'Run analysis'}
+                </button>
+              </div>
+              {algorithmError && <p className='assistant-error' role='alert'>{algorithmError}</p>}
+            </>
+          ) : (
+            <>
+              <p>Ask a question about verified monthly figures. Answers are generated by the configured AI service.</p>
+          {assistantMessages.length === 0 && (
+            <div className='assistant-prompts'>
+              {['How did my business perform this month?', 'What are my biggest expenses?', 'What should I focus on next?'].map((prompt) => (
+                <button className='dmini' type='button' key={prompt} onClick={() => setAssistantQuestion(prompt)}>{prompt}</button>
+              ))}
+            </div>
+          )}
+          {assistantMessages.length > 0 && (
+            <div className='assistant-messages' role='log' aria-live='polite' aria-label='Assistant conversation'>
+              {assistantMessages.map((message, index) => (
+                <div className={'assistant-message ' + (message.role === 'user' ? 'user' : 'assistant')} key={index}>
+                  <span className='assistant-label'>{message.role === 'user' ? 'You' : 'Nexa assistant'}</span>
+                  <p>{message.text}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          <form className='assistant-form' onSubmit={askAssistant}>
+            <textarea aria-label='Ask a question about your business' maxLength={1000} placeholder='Ask about revenue, expenses, or trends…'
+              value={assistantQuestion} onChange={(event) => setAssistantQuestion(event.target.value)} disabled={assistantBusy} />
+            <button className='btn iri nbtn' type='submit' disabled={assistantBusy || !assistantQuestion.trim()}>
+              {assistantBusy ? 'Thinking…' : 'Ask'}
+            </button>
+          </form>
+          {assistantError && <p className='assistant-error' role='alert'>{assistantError}</p>}
+          <p className='assistant-note'>Only your question and aggregated monthly summary are sent to the configured AI service; customer and product names or transaction details are not shared. Answers are suggestions, not financial advice.</p>
+            </>
+          )}
+        </section>
+        {assistantMode === 'algorithm' && algorithmResult && (
+          <section className='dc algorithm-results'>
+            <Title ic={IC.gross} right={<span className='nmut'>{algorithmResult.period}</span>}>{algorithmResult.title}</Title>
+            <div className='algorithm-metrics'>
+              {algorithmResult.metrics.map((metric) => (
+                <div className='algorithm-metric' key={metric.label}>
+                  <span>{metric.label}</span>
+                  <b>{metric.value === null ? '—' : metric.format === 'currency' ? preciseMoney(metric.value) : metric.format === 'percent' || metric.format === 'change' ? `${metric.value}%` : metric.value}</b>
+                </div>
+              ))}
+            </div>
+            {algorithmResult.series && (
+              <div className='algorithm-series' aria-label='Monthly sales and moving averages'>
+                {algorithmResult.series.map((point) => {
+                  const peak = Math.max(...algorithmResult.series.map((item) => Number(item.revenue)), 1);
+                  return (
+                    <div className='algorithm-series-row' key={point.period}>
+                      <span>{point.label}</span>
+                      <div className='algorithm-series-track'><i style={{ width: `${Math.max(Number(point.revenue) > 0 ? 2 : 0, Number(point.revenue) / peak * 100)}%` }} /></div>
+                      <div className='algorithm-series-values'><b>{preciseMoney(point.revenue)}</b><span>3mo avg {preciseMoney(point.moving_average)}</span></div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {algorithmResult.categories && (
+              <div className='algorithm-table'>
+                {algorithmResult.categories.length === 0
+                  ? <div className='algorithm-empty'><p>No expense categories were recorded for this period.</p></div>
+                  : <>
+                    <div className='algorithm-row'><b>Category</b><b>Amount</b><b className='optional'>vs prior</b><b>Share</b></div>
+                    {algorithmResult.categories.map((row) => (
+                      <div className='algorithm-row' key={row.category}>
+                        <b>{row.category}</b><span>{preciseMoney(row.amount)}</span>
+                        <span className='optional'>{row.change_pct === null ? '—' : `${row.change_pct}%`}</span>
+                        <span>{row.share_pct === null ? '—' : `${row.share_pct}%`}</span>
+                      </div>
+                    ))}
+                  </>}
+              </div>
+            )}
+            {algorithmResult.products && (
+              <div className='algorithm-table'>
+                {algorithmResult.products.length === 0
+                  ? <div className='algorithm-empty'><p>No product-linked sales were recorded for this period.</p></div>
+                  : <>
+                    <div className='algorithm-row'><b>Product</b><b>Revenue</b><b className='optional'>Units</b><b>Gross profit</b></div>
+                    {algorithmResult.products.map((row) => (
+                      <div className='algorithm-row' key={row.rank}>
+                        <b>{row.rank}. {row.product}</b><span>{preciseMoney(row.revenue)}</span>
+                        <span className='optional'>{row.units}</span><span>{preciseMoney(row.gross_profit)}</span>
+                      </div>
+                    ))}
+                  </>}
+              </div>
+            )}
+            {algorithmResult.stock && (
+              <div className='algorithm-table'>
+                {algorithmResult.stock.length === 0
+                  ? <div className='algorithm-empty'><p>No products are tracked yet. Receive stock to start.</p></div>
+                  : <>
+                    <div className='algorithm-row'><b>Product</b><b>Stock</b><b className='optional'>Cover</b><b>Status</b></div>
+                    {algorithmResult.stock.map((row) => (
+                      <div className='algorithm-row' key={row.product}>
+                        <b>{row.product}</b><span>{row.stock}</span>
+                        <span className='optional'>{row.days_cover === null ? '—' : `${row.days_cover} days`}</span>
+                        <span>{row.status}{row.reorder_qty > 0 ? ` · order ${row.reorder_qty}` : ''}</span>
+                      </div>
+                    ))}
+                  </>}
+              </div>
+            )}
+            <ul className='algorithm-insights'>
+              {algorithmResult.insights.map((insight, index) => <li key={index}>{insight}</li>)}
+            </ul>
+            <p className='assistant-note'>Calculated from recorded transactions for this period. Insights are descriptive, not financial advice.</p>
+          </section>
+        )}
         <section className='dc span2'>
           <Title ic={IC.bulb} right={<div className='nseg sm' role='group' aria-label='Filter by priority'>
             {['All', 'High'].map((p) => <button key={p} aria-pressed={pri === p} onClick={() => setPri(p)}>{p}</button>)}</div>}>Smart ideas for you</Title>
@@ -892,7 +1557,7 @@ function Dashboard({ dark, setTheme, onExit }) {
         </section>
         <section className='dc span3'>
           <Title ic={IC.gross} right={<span className='nleg'><i />Actual<i className='fc' />Forecast</span>}>Sales by week, {m}</Title>
-          <Trend series={series} next={nextWeek} key={m + scn + extra.rev} />
+          <Trend series={series} next={nextWeek} key={m + scn + rev} />
         </section>
       </div>
     ),
@@ -933,7 +1598,7 @@ function Dashboard({ dark, setTheme, onExit }) {
           <div key={nav} className='nview'>{views[nav]()}</div>
         </main>
       </div>
-      {form && <RecordSheet type={form} onClose={() => setForm(null)} onSave={save} />}
+      {form && <RecordSheet type={form} onClose={() => setForm(null)} onSave={save} products={prods} />}
     </div>
   );
 }
@@ -978,14 +1643,6 @@ function App() {
           <span className="pill">Monthly forecasts</span>
         </div>
       </main>
-      <section className="steps" aria-labelledby="how">
-        <h2 id="how" className="stitle">Up and running in minutes</h2>
-        <div className="stepgrid">
-          {[["Record your business", "Log sales, purchases and expenses in seconds."], ["See what is working", "Best sellers, margins and monthly trends, always up to date."], ["Act on smart ideas", "Forecasts and strategy tips show you what to do next."]].map(([t, d], i) => (
-            <div className="step" key={t}><b>{i + 1}</b><h3>{t}</h3><p>{d}</p></div>
-          ))}
-        </div>
-      </section>
       <aside className="float f1" aria-hidden="true"><span>Best seller this month</span><b>Earbuds</b><div className="mini"><i /></div></aside>
       <aside className="float f2" aria-hidden="true"><span>Next month forecast</span><b>+8% expected</b></aside>
       {mode && <Sheet mode={mode} onClose={() => setMode(null)} onEnter={() => { setMode(null); setView('app'); }} onSwitch={setMode} />}

@@ -212,6 +212,131 @@ def previous_month(year, month):
     return (year - 1, 12) if month == 1 else (year, month - 1)
 
 
+def goal_bounds(period, today):
+    if period == m.UserSettings.DAY:
+        return today, today
+    if period == m.UserSettings.WEEK:
+        start = today - timedelta(days=today.weekday())
+        return start, start + timedelta(days=6)
+    if period == m.UserSettings.MONTH:
+        return month_bounds(today.year, today.month)
+    return date(today.year, 1, 1), date(today.year, 12, 31)
+
+
+def goal_progress(owner, goal, period):
+    start, end = goal_bounds(period, timezone.localdate())
+    revenue = m.Sale.objects.filter(owner=owner, date__range=(start, end)).aggregate(t=Sum("amount"))["t"] or Decimal(0)
+    return {
+        "period": period,
+        "start": start,
+        "end": end,
+        "revenue": revenue,
+        "goal": goal,
+        "percent": round(float(revenue) / float(goal) * 100, 1),
+        "remaining": max(goal - revenue, Decimal(0)),
+    }
+
+
+def shift_month(year, month, delta):
+    index = year * 12 + month - 1 + delta
+    return index // 12, index % 12 + 1
+
+
+def goal_series(owner, goal, period, today):
+    """Sales per bucket for the Overview goal chart: the days, weeks, or months of the goal period."""
+    if period == m.UserSettings.DAY:
+        first = date(today.year, today.month, 1)
+        days = [first + timedelta(days=i) for i in range(monthrange(today.year, today.month)[1])]
+        spans = [(d, d) for d in days]
+        current, target = today.day - 1, goal
+    elif period == m.UserSettings.WEEK:
+        monday = today - timedelta(days=today.weekday())
+        starts = [monday + timedelta(weeks=i) for i in range(-7, 1)]
+        spans = [(start, start + timedelta(days=6)) for start in starts]
+        current, target = 7, goal
+    elif period == m.UserSettings.MONTH:
+        spans = [month_bounds(*shift_month(today.year, today.month, i)) for i in range(-5, 1)]
+        current, target = 5, goal
+    else:
+        spans = [month_bounds(today.year, month) for month in range(1, 13)]
+        current, target = today.month - 1, goal / 12
+    daily = [
+        (row["date"], row["total"])
+        for row in m.Sale.objects.filter(owner=owner, date__range=(spans[0][0], spans[-1][1]))
+        .order_by().values("date").annotate(total=Sum("amount"))
+    ]
+    return {
+        "period": period,
+        "target": str(target.quantize(CENTS)),
+        "current": current,
+        "buckets": [
+            {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "amount": str(sum((total for day, total in daily if start <= day <= end), Decimal(0)).quantize(CENTS)),
+            }
+            for start, end in spans
+        ],
+    }
+
+
+def assistant_context(owner, year, month):
+    """Build a compact, owner-scoped summary; never include individual transactions."""
+    start, end = month_bounds(year, month)
+    current = month_summary(owner, year, month)
+    previous = month_summary(owner, *previous_month(year, month))
+    sales = m.Sale.objects.filter(owner=owner, date__range=(start, end))
+    paid = sales.filter(status=m.Sale.PAID).aggregate(total=Sum("amount"))["total"] or Decimal(0)
+    pending = sales.filter(status=m.Sale.PENDING).aggregate(count=Count("id"), total=Sum("amount"))
+
+    def amount(value):
+        return str(value.quantize(CENTS))
+
+    def change(key):
+        old = previous[key]
+        return str(((current[key] - old) / old * 100).quantize(Decimal("0.1"))) if old > 0 else None
+
+    categories = (
+        m.Expense.objects.filter(owner=owner, date__range=(start, end))
+        .values("category").annotate(total=Sum("amount")).order_by("-total")[:5]
+    )
+    products = (
+        sales.exclude(product=None).values("product__category")
+        .annotate(units=Sum("quantity"), revenue=Sum("amount")).order_by("-units")[:5]
+    )
+    return {
+        "period": current["month"],
+        "currency": "USD",
+        "summary": {
+            key: amount(current[key])
+            for key in ("revenue", "cogs", "expenses", "gross_profit", "net_profit")
+        },
+        "previous_period": previous["month"],
+        "previous_summary": {
+            key: amount(previous[key])
+            for key in ("revenue", "cogs", "expenses", "gross_profit", "net_profit")
+        },
+        "change_vs_previous_pct": {
+            key: change(key) for key in ("revenue", "gross_profit", "expenses", "net_profit")
+        },
+        "paid_sales_total": amount(paid),
+        "pending_payments": {
+            "count": pending["count"],
+            "total": amount(pending["total"] or Decimal(0)),
+        },
+        "weekly_sales": [amount(value) for value in current["weekly_sales"]],
+        "top_product_categories": [
+            {"rank": rank, "category": row["product__category"], "units": row["units"],
+             "revenue": amount(row["revenue"])}
+            for rank, row in enumerate(products, start=1)
+        ],
+        "expense_categories": [
+            {"category": row["category"], "amount": amount(row["total"])}
+            for row in categories
+        ],
+    }
+
+
 def forecast(summary):
     last_week = summary["weekly_sales"][3]
     return {

@@ -23,4 +23,4 @@ Run backend tests from `backend`:
 python manage.py test
 ```
 
-The development settings are not intended for production deployment. See [backend/README.md](backend/README.md) for API details and configuration.
+The development settings are not intended for production deployment. See [backend/README.md](backend/README.md) for API details and configuration. For a full guide to the app's features, calculations, and known limitations, see [docs/APP_DOCUMENTATION.md](docs/APP_DOCUMENTATION.md).

@@ -51,6 +51,7 @@ class Product(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     target_stock = models.PositiveIntegerField(default=60)
+    image = models.TextField(blank=True, default="")
     supplier = models.ForeignKey(Supplier, null=True, blank=True, on_delete=models.SET_NULL, related_name="products")
 
     class Meta:
@@ -138,3 +139,15 @@ class Purchase(models.Model):
     @property
     def total(self):
         return self.quantity * self.unit_cost
+
+
+class UserSettings(models.Model):
+    DAY = "day"
+    WEEK = "week"
+    MONTH = "month"
+    YEAR = "year"
+    PERIODS = [(DAY, "Day"), (WEEK, "Week"), (MONTH, "Month"), (YEAR, "Year")]
+
+    owner = models.OneToOneField(Owner, on_delete=models.CASCADE, related_name="preferences")
+    revenue_goal = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    goal_period = models.CharField(max_length=10, choices=PERIODS, default=MONTH)

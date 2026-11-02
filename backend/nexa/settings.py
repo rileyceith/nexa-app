@@ -88,3 +88,6 @@ DEFAULT_FROM_EMAIL = os.environ.get("NEXA_FROM_EMAIL", "Nexa <no-reply@nexa.loca
 
 MAGIC_LINK_MINUTES = 15
 API_TOKEN_DAYS = 30
+
+NEXA_OPENAI_API_KEY = os.environ.get("NEXA_OPENAI_API_KEY", "")
+NEXA_OPENAI_MODEL = os.environ.get("NEXA_OPENAI_MODEL", "gpt-4o-mini")

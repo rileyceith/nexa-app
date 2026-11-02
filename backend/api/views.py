@@ -1,3 +1,4 @@
+import base64
 import json
 from decimal import Decimal, InvalidOperation
 from functools import wraps
@@ -5,11 +6,14 @@ from functools import wraps
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
+from django.core.cache import cache
 from django.db.models import Count, Max, Sum
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
+from . import algorithms
+from . import assistant as ai
 from . import models as m
 from . import services as svc
 
@@ -24,7 +28,7 @@ def fail(message, status=400):
     return JsonResponse({"error": message}, status=status)
 
 
-def api(*methods, auth=True):
+def api(*methods, auth=True, max_body=None):
     def deco(fn):
         @wraps(fn)
         def wrapper(request, *args, **kwargs):
@@ -39,6 +43,8 @@ def api(*methods, auth=True):
                 request.owner = user
             request.data = {}
             if request.method in ("POST", "PATCH") and request.body:
+                if max_body is not None and len(request.body) > max_body:
+                    return fail("Request is too large.", 413)
                 try:
                     request.data = json.loads(request.body)
                     if not isinstance(request.data, dict):
@@ -97,6 +103,29 @@ def supplier_named(owner, name):
     return m.Supplier.objects.get_or_create(owner=owner, name=name)[0] if name else None
 
 
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")
+MAX_IMAGE_BYTES = 1024 * 1024
+
+
+def image_data(data, key="image"):
+    """Validate a base64 image data URL. Returns None when the key is absent and "" to clear it."""
+    if key not in data:
+        return None
+    raw = str(data.get(key) or "")
+    if not raw:
+        return ""
+    header, sep, payload = raw.partition(",")
+    if not sep or not header.startswith("data:") or ";base64" not in header or header[5:].split(";")[0] not in IMAGE_TYPES:
+        raise svc.ServiceError("image must be a PNG, JPEG, WebP or GIF file.")
+    try:
+        size = len(base64.b64decode(payload, validate=True))
+    except ValueError:
+        raise svc.ServiceError("image could not be read.")
+    if size > MAX_IMAGE_BYTES:
+        raise svc.ServiceError("image must be 1 MB or smaller.")
+    return raw
+
+
 # ---------- serializers ----------
 
 def s_product(p):
@@ -106,7 +135,7 @@ def s_product(p):
         "margin_pct": round((p.price - p.cost) / p.price * 100, 1) if p.price else 0,
         "target_stock": p.target_stock, "in_stock": left,
         "low_stock": bool(p.target_stock) and left / p.target_stock < 0.35,
-        "supplier": p.supplier.name if p.supplier else None,
+        "supplier": p.supplier.name if p.supplier else None, "image": p.image,
     }
 
 
@@ -114,7 +143,7 @@ def s_sale(s):
     return {
         "id": s.id, "customer": s.customer.name if s.customer else "Walk-in",
         "product": s.product.name if s.product else None, "quantity": s.quantity,
-        "amount": s.amount, "status": s.status, "date": s.date,
+        "amount": s.amount, "status": s.status, "date": s.date, "cogs": s.cogs,
     }
 
 
@@ -228,6 +257,8 @@ def product_detail(request, pk):
             p.target_stock = whole(d, "target_stock")
         if "supplier" in d:
             p.supplier = supplier_named(request.owner, d["supplier"])
+        if "image" in d:
+            p.image = image_data(d)
         p.save()
     return ok(s_product(p))
 
@@ -367,6 +398,7 @@ def purchase_receive(request, pk):
 def receive(request):
     o, d = request.owner, request.data
     qty, cost = whole(d, "quantity"), money(d, "unit_cost")
+    image = image_data(d)
     supplier = supplier_named(o, d.get("supplier"))
     if d.get("product_id"):
         product = mine(m.Product, o, d["product_id"])
@@ -377,10 +409,14 @@ def receive(request):
         if m.Product.objects.filter(owner=o, name__iexact=name).exists():
             return fail("That product already exists. Choose it from the list.", 409)
         product = m.Product.objects.create(
-            owner=o, name=name, category="General", price=money(d, "price"), cost=cost, supplier=supplier
+            owner=o, name=name, category="General", price=money(d, "price"), cost=cost, supplier=supplier,
+            image=image or "",
         )
     batch = svc.receive_stock(o, product=product, quantity=qty, unit_cost=cost, supplier=supplier)
-    return ok(s_batch(batch), 201)
+    if d.get("product_id") and image is not None:
+        product.image = image
+        product.save(update_fields=["image"])
+    return ok({**s_batch(batch), "product": s_product(product)}, 201)
 
 
 # ---------- reporting ----------
@@ -422,3 +458,69 @@ def reports(request):
 @api("GET")
 def insights(request):
     return ok(svc.insights(request.owner))
+
+
+@api("GET", "PATCH")
+def app_settings(request):
+    prefs, _ = m.UserSettings.objects.get_or_create(owner=request.owner)
+    if request.method == "PATCH":
+        d = request.data
+        if "goal_period" in d:
+            period = str(d["goal_period"] or "")
+            if period not in dict(m.UserSettings.PERIODS):
+                return fail("goal_period must be day, week, month, or year.")
+            prefs.goal_period = period
+        if "revenue_goal" in d:
+            prefs.revenue_goal = money(d, "revenue_goal", required=False)
+        prefs.save()
+    goal = prefs.revenue_goal
+    return ok({
+        "revenue_goal": goal,
+        "goal_period": prefs.goal_period,
+        "progress": svc.goal_progress(request.owner, goal, prefs.goal_period) if goal is not None else None,
+    })
+
+
+@api("GET")
+def goal_series(request):
+    prefs = m.UserSettings.objects.filter(owner=request.owner).first()
+    if prefs is None or prefs.revenue_goal is None:
+        return ok(None)
+    return ok(svc.goal_series(request.owner, prefs.revenue_goal, prefs.goal_period, timezone.localdate()))
+
+
+@api("POST", max_body=4096)
+def assistant_chat(request):
+    key = f"nexa:assistant:{request.owner.pk}"
+    if not cache.add(key, 1, timeout=60):
+        try:
+            requests = cache.incr(key)
+        except ValueError:
+            cache.set(key, 1, timeout=60)
+            requests = 1
+        if requests > 10:
+            return fail("Too many assistant requests. Try again in a minute.", 429)
+    question = request.data.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return fail("Enter a question for the assistant.")
+    question = question.strip()
+    if len(question) > 1000:
+        return fail("Questions must be 1000 characters or fewer.")
+    year, month = svc.parse_month(request.data.get("month"))
+    context = svc.assistant_context(request.owner, year, month)
+    return ok({
+        "answer": ai.generate_answer(question, context),
+        "period": context["period"],
+    })
+
+
+@api("POST", max_body=4096)
+def assistant_analyze(request):
+    analysis = request.data.get("analysis")
+    if not isinstance(analysis, str) or analysis not in algorithms.ANALYSES:
+        return fail("Choose a supported algorithm analysis.")
+    try:
+        year, month = svc.parse_month(request.data.get("month"))
+    except svc.ServiceError as error:
+        return fail(error.message, error.status)
+    return ok(algorithms.analyze(request.owner, analysis, year, month))

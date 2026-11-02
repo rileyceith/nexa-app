@@ -24,4 +24,8 @@ urlpatterns = [
     path("dashboard/", v.dashboard),
     path("reports/", v.reports),
     path("insights/", v.insights),
+    path("settings/", v.app_settings),
+    path("settings/series/", v.goal_series),
+    path("assistant/chat/", v.assistant_chat),
+    path("assistant/analyze/", v.assistant_analyze),
 ]
