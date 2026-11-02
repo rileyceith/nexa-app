@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Local data and configuration
+*.sqlite3
+.env
+.env.*
+
+# Operating system files
+.DS_Store
+Thumbs.db
