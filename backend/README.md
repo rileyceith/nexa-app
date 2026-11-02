@@ -69,18 +69,17 @@ category comparisons, and product revenue rankings.
 
 ## Deployment (Render + Cloudflare Pages)
 
-**Backend (Render Web Service, Root Directory `backend`)**
+**Backend (Render Blueprint)**
 
-- Environment: `PYTHON_VERSION=3.13`
-- Build command: `pip install -r requirements.txt`
-- Start command: `python manage.py migrate && gunicorn nexa.wsgi --bind 0.0.0.0:$PORT`
-- Create a Render PostgreSQL database and set `NEXA_DATABASE_URL` to its Internal Database URL.
-- Set these variables:
+- The repository root has `render.yaml`. In Render, choose **New > Blueprint** and select this repository. It creates the `nexa-api` web service (root directory `backend`) and the `nexa-db` PostgreSQL database, sets the variables below, and connects `NEXA_DATABASE_URL` to the database.
+- The database uses the paid `basic-256mb` plan. Render's free PostgreSQL expires after 30 days, and its data is deleted 14 days after that.
+- Build: `pip install -r requirements.txt`. Pre-deploy: `python manage.py migrate`. Start: `gunicorn nexa.wsgi --bind 0.0.0.0:$PORT`.
+- Variables (the Blueprint sets these; for a manual setup, set them yourself):
 
   ```
   NEXA_DEBUG=0
   NEXA_SECRET_KEY=<long random string>
-  NEXA_ALLOWED_HOSTS=api.Nexa-app.com
+  NEXA_ALLOWED_HOSTS=api.Nexa-app.com,nexa-api.onrender.com
   NEXA_CORS_ORIGINS=https://app.Nexa.com
   NEXA_FRONTEND_URL=https://app.Nexa.com/Nexa.html
   NEXA_DATABASE_URL=<Render Postgres internal URL>
