@@ -3,7 +3,7 @@
 Nexa is a business dashboard for tracking sales, stock, purchases, customers, and expenses. It has two parts:
 
 - **Frontend**: a single HTML file with a React interface, opened directly in a browser.
-- **Backend**: a Django JSON API with SQLite storage. All data is scoped to the signed-in user.
+- **Backend**: a Django JSON API with SQLite storage by default, or PostgreSQL when `NEXA_DATABASE_URL` is set. All data is scoped to the signed-in user.
 
 It also includes a financial intelligence layer with two engines. The **Algorithm engine** runs deterministic calculations and works without any AI service. The **AI engine** answers questions in natural language, using aggregated figures from the same data.
 
@@ -39,7 +39,7 @@ python manage.py seed_demo you@email.com   # optional: sample data for this acco
 python manage.py runserver 127.0.0.1:8000
 ```
 
-Leave the server running. Then open `frontend/Nexa.html` in a browser. The page connects to `http://localhost:8000/api` by default. You can change this by setting `window.NEXA_API` before the app script loads.
+Leave the server running. Then open `frontend/Nexa.html` in a browser. The page connects to `http://localhost:8000/api` when opened locally, and to `https://api.Nexa-app.com/api` otherwise. You can change this by setting `window.NEXA_API` before the app script loads.
 
 The development settings are not for production. Debug mode is on by default. See [Configuration](#configuration).
 
@@ -379,6 +379,7 @@ Set these environment variables before starting the server. The defaults are for
 | `NEXA_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Hosts the server accepts. |
 | `NEXA_CORS_ORIGINS` | `null` (for `file://`), `localhost:5500`, `127.0.0.1:5500`, `localhost:8080` | Origins allowed to call the API. |
 | `NEXA_FRONTEND_URL` | `http://localhost:5500/Nexa.html` | Base of the links in sign-in emails. |
+| `NEXA_DATABASE_URL` | unset (uses `backend/db.sqlite3`) | PostgreSQL connection URL for production. |
 | `NEXA_EMAIL_BACKEND` | console | Where emails go. In development, links print to the console. |
 | `NEXA_FROM_EMAIL` | (see settings) | Sender address for emails. |
 | `NEXA_OPENAI_API_KEY` | (none) | Enables the AI engine. Keep it on the server only. |
@@ -418,4 +419,4 @@ These are known differences between the code and the browser experience. Each ha
 6. **The AI engine has not been tested end to end with a real key.** The Algorithm engine has been tested through the API and the browser.
 7. **Rate limits use Django's cache.** Unless `CACHES` is configured in settings, Django uses per-process memory. Counts are not shared across server processes.
 9. **The mobile layout is not fully verified.** The desktop layout has been checked.
-10. **The settings are for development.** Debug mode is on by default, and the server is not configured for production hosting.
+10. **The settings are for development by default.** Debug mode is on unless `NEXA_DEBUG=0` is set. For production hosting, follow the [Deployment](backend/README.md#deployment-render--cloudflare-pages) steps.

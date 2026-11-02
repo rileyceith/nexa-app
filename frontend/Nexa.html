@@ -318,7 +318,8 @@ body.inapp{background:#e0e0e6}
 <script type="text/babel">
 const { useState, useEffect, useLayoutEffect, useRef } = React;
 
-const API = window.NEXA_API || "http://localhost:8000/api";
+const LOCAL_DEV = location.protocol === "file:" || ["localhost", "127.0.0.1"].includes(location.hostname);
+const API = window.NEXA_API || (LOCAL_DEV ? "http://localhost:8000/api" : "https://api.Nexa-app.com/api");
 const TOKEN_KEY = "nexa_token";
 async function call(path, body, token, method) {
   let r;

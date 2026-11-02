@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import dj_database_url
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 DEBUG = os.environ.get("NEXA_DEBUG", "1") == "1"
@@ -60,12 +62,16 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "nexa.wsgi.application"
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+# Production sets NEXA_DATABASE_URL (e.g. postgres://user:password@host:5432/nexa); SQLite is the local default.
+if os.environ.get("NEXA_DATABASE_URL"):
+    DATABASES = {"default": dj_database_url.config(env="NEXA_DATABASE_URL", conn_max_age=600)}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

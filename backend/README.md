@@ -1,6 +1,6 @@
 # Nexa backend (Django)
 
-JSON API for the Nexa dashboard. Dependencies: Django only.
+JSON API for the Nexa dashboard. Dependencies are listed in `requirements.txt`: Django, plus gunicorn, psycopg and dj-database-url for deployment.
 
 ## Run
 
@@ -56,7 +56,8 @@ batch first and uses the real batch cost for cost of goods; unlinked sales use a
 
 `NEXA_DEBUG` (default `1`), `NEXA_SECRET_KEY` (required when debug is `0`), `NEXA_ALLOWED_HOSTS`,
 `NEXA_CORS_ORIGINS` (default allows `null`, i.e. the page opened from `file://`, and localhost dev ports),
-`NEXA_FRONTEND_URL` (base of the magic link), `NEXA_EMAIL_BACKEND`, `NEXA_FROM_EMAIL`.
+`NEXA_FRONTEND_URL` (base of the magic link), `NEXA_EMAIL_BACKEND`, `NEXA_FROM_EMAIL`,
+`NEXA_DATABASE_URL` (PostgreSQL URL; SQLite `db.sqlite3` is used when unset).
 
 The assistant requires `NEXA_OPENAI_API_KEY`; `NEXA_OPENAI_MODEL` defaults to `gpt-4o-mini`.
 Keep the key in the server environment and never in frontend code. The assistant sends the user's
@@ -65,3 +66,31 @@ to the configured OpenAI API. Names and record identifiers are excluded, and con
 history is not persisted. Deterministic analyses run without an AI provider and use owner-scoped
 Django queries for profitability ratios, six-month sales trends and moving averages, expense
 category comparisons, and product revenue rankings.
+
+## Deployment (Render + Cloudflare Pages)
+
+**Backend (Render Web Service, Root Directory `backend`)**
+
+- Environment: `PYTHON_VERSION=3.13`
+- Build command: `pip install -r requirements.txt`
+- Start command: `python manage.py migrate && gunicorn nexa.wsgi --bind 0.0.0.0:$PORT`
+- Create a Render PostgreSQL database and set `NEXA_DATABASE_URL` to its Internal Database URL.
+- Set these variables:
+
+  ```
+  NEXA_DEBUG=0
+  NEXA_SECRET_KEY=<long random string>
+  NEXA_ALLOWED_HOSTS=api.Nexa-app.com
+  NEXA_CORS_ORIGINS=https://app.Nexa.com
+  NEXA_FRONTEND_URL=https://app.Nexa.com/Nexa.html
+  NEXA_DATABASE_URL=<Render Postgres internal URL>
+  ```
+
+- Add `api.Nexa-app.com` as a custom domain in Render, then add the CNAME record it shows at your DNS provider.
+- Sign-in links are printed to the Render logs until `NEXA_EMAIL_BACKEND` and SMTP settings are configured. Password sign-in works without email.
+
+**Frontend (Cloudflare Pages)**
+
+- Connect the GitHub repository. Leave the build command empty and set the build output directory to `frontend`.
+- Add `app.Nexa.com` as a custom domain.
+- `frontend/Nexa.html` calls `https://api.Nexa-app.com/api` unless it is opened from localhost or `file://`.
