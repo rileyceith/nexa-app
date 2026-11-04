@@ -9,8 +9,10 @@ from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
+from django.core.validators import validate_email
 from django.db import transaction
-from django.db.models import Count, Sum
+from django.db.models import Count, Sum, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from . import models as m
@@ -18,6 +20,10 @@ from . import models as m
 CENTS = Decimal("0.01")
 COGS_ESTIMATE_RATIO = Decimal("0.6")  # used when a sale is not linked to a product
 SCENARIOS = {"Conservative": Decimal("0.97"), "Expected": Decimal("1.08"), "Optimistic": Decimal("1.2")}
+
+
+def money_out(value):
+    return str((value or Decimal(0)).quantize(CENTS))
 
 
 class ServiceError(Exception):
@@ -69,10 +75,15 @@ TERMS_VERSION = "1"
 
 
 @transaction.atomic
-def register(username, password, password2, accepted_terms):
+def register(username, email, password, password2, accepted_terms):
     username = (username or "").strip()
     if not (3 <= len(username) <= 30) or not username.replace("_", "").replace(".", "").replace("-", "").isalnum():
         raise ServiceError("Username must be 3 to 30 letters, numbers, dots, dashes or underscores.")
+    email = (email or "").strip().lower()
+    try:
+        validate_email(email)
+    except DjangoValidationError:
+        raise ServiceError("Enter a valid email address.")
     if password != password2:
         raise ServiceError("The passwords do not match.")
     if accepted_terms is not True:
@@ -81,10 +92,12 @@ def register(username, password, password2, accepted_terms):
     if User.objects.filter(username__iexact=username).exists():
         raise ServiceError("That username is taken.", 409)
     try:
-        validate_password(password, User(username=username))
+        validate_password(password, User(username=username, email=email))
     except DjangoValidationError as e:
         raise ServiceError(" ".join(e.messages))
     user = User.objects.create_user(username=username, password=password)
+    user.email = email
+    user.save(update_fields=["email"])
     m.TermsAcceptance.objects.create(user=user, version=TERMS_VERSION)
     return user, issue_token(user)
 
@@ -126,11 +139,28 @@ def stock_of(product):
     return product.batches.aggregate(t=Sum("quantity_left"))["t"] or 0
 
 
+def with_stock(products):
+    """Annotate products with in_stock in one query, so listings do not query per product."""
+    return products.annotate(in_stock=Coalesce(Sum("batches__quantity_left"), Value(0)))
+
+
+def ledger_balance(product):
+    return product.movements.aggregate(t=Sum("quantity"))["t"] or 0
+
+
+def log_movement(owner, *, product, kind, quantity, batch=None, sale=None, unit_cost=None, on=None, note=""):
+    return m.StockMovement.objects.create(
+        owner=owner, product=product, kind=kind, quantity=quantity, batch=batch, sale=sale,
+        unit_cost=unit_cost, on=on or timezone.localdate(), note=note,
+    )
+
+
 @transaction.atomic
 def record_sale(owner, *, amount, customer_name="Walk-in", status=m.Sale.PAID, product=None, quantity=1, on=None):
     customer_name = (customer_name or "Walk-in").strip() or "Walk-in"
     customer, _ = m.Customer.objects.get_or_create(owner=owner, name=customer_name)
     cogs = (Decimal(amount) * COGS_ESTIMATE_RATIO).quantize(CENTS)
+    takes = []
     if product:
         batches = list(product.batches.select_for_update().filter(quantity_left__gt=0).order_by("received_on", "id"))
         if sum(b.quantity_left for b in batches) < quantity:
@@ -140,14 +170,19 @@ def record_sale(owner, *, amount, customer_name="Walk-in", status=m.Sale.PAID, p
             take = min(need, b.quantity_left)
             b.quantity_left -= take
             b.save(update_fields=["quantity_left"])
+            takes.append((b, take))
             cogs += take * b.unit_cost
             need -= take
             if not need:
                 break
-    return m.Sale.objects.create(
+    sale = m.Sale.objects.create(
         owner=owner, customer=customer, product=product, quantity=quantity, amount=amount,
         cogs=cogs, status=status, date=on or timezone.localdate(),
     )
+    for b, take in takes:
+        log_movement(owner, product=product, kind=m.StockMovement.SALE, quantity=-take, batch=b, sale=sale,
+                     unit_cost=b.unit_cost, on=sale.date)
+    return sale
 
 
 @transaction.atomic
@@ -157,6 +192,8 @@ def receive_stock(owner, *, product, quantity, unit_cost, supplier=None, purchas
         owner=owner, product=product, supplier=supplier, quantity_received=quantity,
         quantity_left=quantity, unit_cost=unit_cost, received_on=today,
     )
+    log_movement(owner, product=product, kind=m.StockMovement.RECEIVE, quantity=quantity, batch=batch,
+                 unit_cost=unit_cost, on=today)
     if purchase:
         purchase.status, purchase.delivered_on = m.Purchase.DELIVERED, today
         purchase.save(update_fields=["status", "delivered_on"])
@@ -348,13 +385,18 @@ def forecast(summary):
 def insights(owner, slow_days=45):
     out = []
     today = timezone.localdate()
-    for p in m.Product.objects.filter(owner=owner).select_related("supplier"):
-        left = stock_of(p)
-        if p.target_stock and left / p.target_stock < 0.35:
-            sold30 = m.Sale.objects.filter(owner=owner, product=p, date__gte=today - timedelta(days=30)).aggregate(
-                t=Sum("quantity"))["t"] or 0
-            pace = f" At the current pace it runs out in about {round(left / (sold30 / 30))} days." if sold30 else ""
-            out.append({"category": "Stock", "priority": "High", "text": f"{p.name} is low ({left} left).{pace} Reorder soon."})
+    products = list(with_stock(m.Product.objects.filter(owner=owner).select_related("supplier")))
+    low = [p for p in products if p.target_stock and p.in_stock / p.target_stock < 0.35]
+    sold30 = {
+        row["product"]: row["t"]
+        for row in m.Sale.objects.filter(owner=owner, product__in=low, date__gte=today - timedelta(days=30))
+        .order_by().values("product").annotate(t=Sum("quantity"))
+    }
+    for p in low:
+        left = p.in_stock
+        units = sold30.get(p.id, 0)
+        pace = f" At the current pace it runs out in about {round(left / (units / 30))} days." if units else ""
+        out.append({"category": "Stock", "priority": "High", "text": f"{p.name} is low ({left} left).{pace} Reorder soon."})
     for b in m.StockBatch.objects.filter(owner=owner, quantity_left__gt=0).select_related("product"):
         if b.age_days > slow_days:
             out.append({"category": "Slow stock", "priority": "Medium",
@@ -364,7 +406,7 @@ def insights(owner, slow_days=45):
         out.append({"category": "Cash", "priority": "Medium",
                     "text": f"{pending['n']} sale(s) worth {pending['t']} are still waiting on payment."})
     best = max(
-        (p for p in m.Product.objects.filter(owner=owner) if p.price),
+        (p for p in products if p.price),
         key=lambda p: (p.price - p.cost) / p.price, default=None,
     )
     if best:

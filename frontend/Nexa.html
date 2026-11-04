@@ -85,14 +85,14 @@ h1 em{font-style:normal;background:var(--iri);-webkit-background-clip:text;backg
 @media (max-width:560px){.scrim{place-items:end center;padding:0}.sheet{border-radius:28px 28px 0 0;width:100%;padding-bottom:calc(28px + env(safe-area-inset-bottom,0px))}}
 @media (prefers-reduced-motion:reduce){.hero>*,.float,.orb{animation:none}}
 .inapp .orb{display:none}
-body.inapp{background:#e0e0e6}
-:root[data-theme="dark"] body.inapp{background:#15141b}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) body.inapp{background:#15141b}}
-.dash{--nbg:#e0e0e6;--nsl:#f6f6fb;--nsd:#bebdcc;--nink:#23222b;--ntitle:#6b6a78;--nmut:#6b6a78;--ncy:#7458e6;--ncy1:#8fb7ff;--ncy2:#c9a6ff;--npu:#ffb3d1;--non:#23222b;--nglow:143,123,255;
-  --raise:9px 9px 18px var(--nsd),-9px -9px 18px var(--nsl);--rsm:5px 5px 10px var(--nsd),-5px -5px 10px var(--nsl);--inset:inset 4px 4px 8px var(--nsd),inset -4px -4px 8px var(--nsl)}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .dash{--nbg:#15141b;--nsl:rgba(255,255,255,.05);--nsd:rgba(0,0,0,.6);--nink:#f0eff6;--ntitle:#a3a2b3;--nmut:#a3a2b3;--ncy:#b9a6ff;--ncy1:#8fb7ff;--ncy2:#c9a6ff;--npu:#ffb3d1}}
-:root[data-theme="dark"] .dash{--nbg:#15141b;--nsl:rgba(255,255,255,.05);--nsd:rgba(0,0,0,.6);--nink:#f0eff6;--ntitle:#a3a2b3;--nmut:#a3a2b3;--ncy:#b9a6ff;--ncy1:#8fb7ff;--ncy2:#c9a6ff;--npu:#ffb3d1}
-.dash{min-height:100svh;padding:34px 22px 56px;display:grid;place-items:start center;background:var(--nbg);color:var(--nink);animation:fade .5s both}
+body.inapp{background:#959db7}
+:root[data-theme="dark"] body.inapp{background:#0d1018}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) body.inapp{background:#0d1018}}
+.dash{--dbg:radial-gradient(900px 520px at 88% -6%,rgba(255,226,190,.6),transparent 62%),radial-gradient(760px 480px at 6% 0%,rgba(255,255,255,.55),transparent 60%),radial-gradient(640px 420px at 10% 100%,rgba(255,255,255,.3),transparent 60%),linear-gradient(180deg,#c3c8d9 0%,#aab1c8 48%,#939bb5 100%);--nbg:rgba(255,255,255,.36);--nsl:rgba(255,255,255,.72);--nsd:rgba(38,46,84,.2);--nhi:rgba(255,255,255,.8);--nedge:rgba(255,255,255,.45);--nink:#1f2536;--ntitle:#3d4663;--nmut:#4b5374;--ncy:#3f5bc4;--ncy1:#9fb8ff;--ncy2:#c7d6ff;--npu:#f3c9a0;--non:#1f2536;--nglow:79,107,216;--iri:linear-gradient(120deg,#8fa9ef,#b9c7f4 50%,#f6d2ad);
+  --raise:0 22px 46px -16px var(--nsd),inset 0 1px 0 var(--nhi),0 0 0 1px var(--nedge);--rsm:0 8px 20px -8px var(--nsd),inset 0 1px 0 var(--nhi),0 0 0 1px var(--nedge);--inset:inset 0 2px 7px var(--nsd),inset 0 -1px 0 var(--nedge)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .dash{--dbg:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='.12'/%3E%3C/svg%3E"),radial-gradient(1000px 600px at 96% -10%,rgba(243,184,130,.2),transparent 60%),radial-gradient(900px 600px at -6% -8%,rgba(112,134,255,.26),transparent 58%),radial-gradient(800px 520px at 58% 112%,rgba(60,190,208,.14),transparent 62%),linear-gradient(180deg,#262d45 0%,#181c2d 50%,#0d1018 100%);--nbg:rgba(255,255,255,.085);--nsl:rgba(255,255,255,.15);--nsd:rgba(3,5,14,.55);--nhi:rgba(255,255,255,.2);--nedge:rgba(255,255,255,.14);--nink:#eef1fb;--ntitle:#b4bcd6;--nmut:#a6afc9;--ncy:#a9bcff;--ncy1:#7f9bf0;--ncy2:#c2d0ff;--npu:#f3c49a;--non:#12151f;--nglow:120,150,255;--iri:linear-gradient(120deg,#7f9bf0,#b8c5ff 50%,#f3c49a)}}
+:root[data-theme="dark"] .dash{--dbg:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='.12'/%3E%3C/svg%3E"),radial-gradient(1000px 600px at 96% -10%,rgba(243,184,130,.2),transparent 60%),radial-gradient(900px 600px at -6% -8%,rgba(112,134,255,.26),transparent 58%),radial-gradient(800px 520px at 58% 112%,rgba(60,190,208,.14),transparent 62%),linear-gradient(180deg,#262d45 0%,#181c2d 50%,#0d1018 100%);--nbg:rgba(255,255,255,.085);--nsl:rgba(255,255,255,.15);--nsd:rgba(3,5,14,.55);--nhi:rgba(255,255,255,.2);--nedge:rgba(255,255,255,.14);--nink:#eef1fb;--ntitle:#b4bcd6;--nmut:#a6afc9;--ncy:#a9bcff;--ncy1:#7f9bf0;--ncy2:#c2d0ff;--npu:#f3c49a;--non:#12151f;--nglow:120,150,255;--iri:linear-gradient(120deg,#7f9bf0,#b8c5ff 50%,#f3c49a)}
+.dash{min-height:100svh;padding:34px 22px 56px;display:grid;place-items:start center;background:var(--dbg);color:var(--nink);animation:fade .5s both}
 .dpanel{width:min(1100px,100%)}
 .nhead{display:flex;flex-wrap:wrap;gap:14px 18px;justify-content:space-between;align-items:center;margin-bottom:26px}
 .nlogo{display:flex;align-items:center;gap:12px;font-weight:700;font-size:22px;letter-spacing:-.02em;color:var(--ntitle)}
@@ -105,7 +105,7 @@ body.inapp{background:#e0e0e6}
 .nseg.sm button{padding:4px 12px;font-size:12px}
 .dash .btn{transition:box-shadow .2s,transform .2s}
 .dash .btn.iri{background:var(--iri);color:var(--non);box-shadow:var(--rsm)}
-.dash .btn.glass{background:var(--nbg);border:0;backdrop-filter:none;-webkit-backdrop-filter:none;color:var(--nink);box-shadow:var(--rsm)}
+.dash .btn.glass{background:var(--nbg);border:0;backdrop-filter:blur(16px) saturate(150%);-webkit-backdrop-filter:blur(16px) saturate(150%);color:var(--nink);box-shadow:var(--rsm)}
 .dash .btn:active{box-shadow:var(--inset);transform:none}
 .nbtn{padding:9px 20px;font-size:13px}
 .dact{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
@@ -118,13 +118,14 @@ body.inapp{background:#e0e0e6}
 .kpi b{display:block;font-size:24px;letter-spacing:-.02em;margin:4px 0 2px;color:var(--nink)}
 .kpi small{display:block;font-size:11.5px;color:var(--nmut);line-height:1.5}
 .kpi .kd{color:var(--ncy)}
-.kpis:not(.three) .kpi{position:relative;min-width:0;overflow:hidden;padding:22px 20px;border:1px solid rgba(116,88,230,.1);background:linear-gradient(135deg,var(--nsl),var(--nbg));box-shadow:0 10px 26px rgba(35,34,43,.08);transition:transform .2s ease,box-shadow .2s ease}
+.kpis:not(.three) .kpi{position:relative;min-width:0;overflow:hidden;padding:22px 20px;border:1px solid var(--nedge);background:linear-gradient(135deg,var(--nsl),var(--nbg));box-shadow:var(--raise);transition:transform .2s ease,box-shadow .2s ease}
 .kpis:not(.three) .kpi::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:linear-gradient(180deg,var(--ncy1),var(--ncy),var(--npu));opacity:.8}
-.kpis:not(.three) .kpi:hover{transform:translateY(-3px);box-shadow:0 16px 30px rgba(35,34,43,.12)}
+.kpis:not(.three) .kpi:hover{transform:translateY(-3px);box-shadow:0 26px 48px -16px var(--nsd),inset 0 1px 0 var(--nhi)}
 .kpis:not(.three) .kpi .dlab{font-size:10px;letter-spacing:.16em}
 .kpis:not(.three) .kpi b{font-size:clamp(25px,2.4vw,30px);line-height:1.15;font-variant-numeric:tabular-nums;margin:5px 0 4px}
 .kpis:not(.three) .kpi small{font-size:12px}
 .kpis:not(.three) .kpi .kd{margin-top:3px}
+.kpis:not(.three) .kpi.metric::before{display:none}
 .nring{position:relative;width:82px;height:82px;flex:none;border-radius:50%;display:grid;place-items:center;background:var(--nbg);box-shadow:var(--rsm)}
 .nring svg{position:absolute;inset:5px;width:calc(100% - 10px);height:calc(100% - 10px)}
 .rt{fill:none;stroke:var(--nsd);stroke-width:7;opacity:.45}
@@ -132,6 +133,9 @@ body.inapp{background:#e0e0e6}
 .nring .nin{width:40px;height:40px}
 .kpis:not(.three) .nring{width:72px;height:72px;background:rgba(116,88,230,.08);box-shadow:none;border:1px solid rgba(116,88,230,.1)}
 .kpis:not(.three) .nring .nin{background:transparent;box-shadow:none}
+.kpis:not(.three) .kpi-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.kpis:not(.three) .kpi.metric .nring{width:44px;height:44px}
+.kpis:not(.three) .kpi.metric .nring .nin{width:24px;height:24px}
 .assistant-chat{grid-column:1/-1}
 .assistant-messages{display:grid;gap:10px;max-height:360px;overflow:auto;padding:2px}
 .assistant-message{max-width:min(82%,720px);padding:12px 16px;border-radius:18px;background:var(--nsl);color:var(--nink)}
@@ -222,10 +226,10 @@ body.inapp{background:#e0e0e6}
 .nnote{margin:22px 0 0;font-size:12px;color:var(--nmut);text-align:center}
 
 .dash .scrim{background:rgba(30,28,50,.25)}
-.dash .sheet{background:var(--nbg);border:0;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:var(--raise);color:var(--nink)}
+.dash .sheet{background:var(--nsl);border:1px solid var(--nedge);backdrop-filter:blur(24px) saturate(160%);-webkit-backdrop-filter:blur(24px) saturate(160%);box-shadow:var(--raise);color:var(--nink)}
 .dash .sheet p,.dash .sheet label{color:var(--nmut)}
 .dash .sheet input,.dash .sheet select{background:var(--nbg);border:0;box-shadow:var(--inset);color:var(--nink)}
-.dash .sheet .nseg button[aria-pressed='true']{color:var(--ncy)}
+.dash .sheet .nseg button[aria-pressed='true']{color:var(--ncy)}.dash .kpi,.dash .dc,.dash .nside{border:1px solid var(--nedge);backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%)}
 @media (max-width:1000px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.dgrid{grid-template-columns:1fr}.span2{grid-column:auto}}
 @media (max-width:520px){.kpis{grid-template-columns:1fr;gap:12px}.kpis:not(.three) .kpi{padding:18px}.dash{padding:22px 14px 40px}.nbars{gap:8px}.assistant-form{grid-template-columns:1fr}.assistant-form .btn{justify-self:end}.assistant-message{max-width:94%}.assistant-modes{align-items:flex-start;flex-direction:column}.assistant-modes .nseg{margin-left:0}.algorithm-series-row{grid-template-columns:48px minmax(0,1fr) 78px;gap:8px}.algorithm-row{grid-template-columns:minmax(75px,1fr) repeat(2,minmax(64px,auto));gap:8px;padding:10px}.algorithm-row .optional{display:none}}
 @media (prefers-reduced-motion:reduce){.dash,.dc,.rf,.ntrack i,.kpis:not(.three) .kpi{animation:none;transition:none}}
@@ -381,7 +385,7 @@ async function shrinkImage(file) {
 }
 
 function Sheet({ mode, onClose, onEnter, onSwitch }) {
-  const [f, setF] = useState({ username: "", password: "", password2: "", terms: false });
+  const [f, setF] = useState({ username: "", email: "", password: "", password2: "", terms: false });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
@@ -436,7 +440,7 @@ function Sheet({ mode, onClose, onEnter, onSwitch }) {
     setBusy(true);
     try {
       const res = await call(signup ? "/auth/register/" : "/auth/login/",
-        signup ? { username: f.username, password: f.password, password2: f.password2, accepted_terms: f.terms }
+        signup ? { username: f.username, email: f.email, password: f.password, password2: f.password2, accepted_terms: f.terms }
                : { username: f.username, password: f.password });
       localStorage.setItem(TOKEN_KEY, res.token);
       leave(() => onEnter(res.user));
@@ -452,11 +456,16 @@ function Sheet({ mode, onClose, onEnter, onSwitch }) {
         onClick={(e) => e.stopPropagation()} onSubmit={submit} onTransitionEnd={settleHeight} noValidate>
         <div className="hd" key={mode}>
           <h2 id="st">{signup ? "Create your Nexa account" : "Welcome back"}</h2>
-          <p>{signup ? "Choose a username and password." : "Sign in with your username and password."}</p>
+          <p>{signup ? "Choose an email, username and password." : "Sign in with your username and password."}</p>
         </div>
         <label>Username
           <input ref={ref} type="text" required autoComplete="username" value={f.username} onChange={set("username")} />
         </label>
+        {signup && (
+          <label>Email
+            <input type="email" required autoComplete="email" value={f.email} onChange={set("email")} />
+          </label>
+        )}
         <label>Password
           <input type="password" required autoComplete={signup ? "new-password" : "current-password"} value={f.password} onChange={set("password")} />
         </label>
@@ -720,8 +729,10 @@ const NAV = [
 
 const BATCHES0 = [];
 
+// image_url is an API-relative path, so it is resolved against the API base.
+const productImage = (path) => (path ? new URL(path + '?size=400', API).href : '');
 // Maps API rows to the tuple shapes the dashboard keeps in state.
-const productRow = (p) => [p.name, p.category, Number(p.price), Number(p.cost), 0, p.target_stock, p.supplier || '', p.image || '', p.id];
+const productRow = (p) => [p.name, p.category, Number(p.price), Number(p.cost), 0, p.target_stock, p.supplier || '', productImage(p.image_url), p.id];
 const batchRow = (b) => [b.id, b.product, b.quantity_received, b.quantity_left, b.age_days, Number(b.unit_cost), b.supplier || ''];
 const dateLabel = (iso) => {
   if (!iso) return '';
@@ -983,9 +994,15 @@ function Dashboard({ dark, setTheme, onExit }) {
     const body = { quantity: qty, unit_cost: cost, supplier };
     if (isNew) {
       name = rf.name.trim();
-      if (!name || !(price > 0)) return setRmsg('Give the new product a name and a selling price.');
-      if (prodList.some((p) => p[0].toLowerCase() === name.toLowerCase())) return setRmsg('That product already exists. Choose it from the list.');
-      Object.assign(body, { new_product_name: name, price });
+      if (!name) return setRmsg('Give the new product a name.');
+      const match = prodList.find((p) => p[0].toLowerCase() === name.toLowerCase());
+      if (match) {
+        name = match[0];
+        body.product_id = match[8];
+      } else {
+        if (!(price > 0)) return setRmsg('Give the new product a selling price.');
+        Object.assign(body, { new_product_name: name, price });
+      }
     } else {
       body.product_id = existing[8];
     }
@@ -996,7 +1013,7 @@ function Dashboard({ dark, setTheme, onExit }) {
       const { product } = await call('/receive/', body, localStorage.getItem(TOKEN_KEY));
       setProdList((l) => (l.some((p) => p[8] === product.id) ? l.map((p) => (p[8] === product.id ? productRow(product) : p)) : [...l, productRow(product)]));
       await refreshStock();
-      setRf((f) => ({ ...f, p: name, q: '', name: '', price: '', img: '', imgName: '' }));
+      setRf({ p: '__new', q: '', c: '', s: '', name: '', price: '', img: '', imgName: '' });
       if (imgRef.current) imgRef.current.value = '';
       setRmsg(`${qty} × ${name} added to stock.`);
     } catch (error) {
@@ -1031,10 +1048,10 @@ function Dashboard({ dark, setTheme, onExit }) {
         {dashError && <p className='nerr' role='alert'>{dashError}</p>}
         <div className='kpis'>
           {kpis.map(([l, v, d, p, ic, cap]) => (
-            <div className='kpi' key={l}>
-              <Ring pct={p} icon={ic} />
-              <div><span className='dlab'>{l}</span><b>{money(v)}</b>
-                <small>{p == null ? cap : `${Math.round(Math.max(0, Math.min(999, p)))}% ${cap}`}</small><small className='kd'>{d}</small></div>
+            <div className='kpi flat metric' key={l}>
+              <div className='kpi-head'><span className='dlab'>{l}</span><Ring pct={p} icon={ic} /></div>
+              <b>{money(v)}</b>
+              <small>{p == null ? cap : `${Math.round(Math.max(0, Math.min(999, p)))}% ${cap}`}</small><small className='kd'>{d}</small>
             </div>
           ))}
         </div>
@@ -1177,8 +1194,8 @@ function Dashboard({ dark, setTheme, onExit }) {
       <div className='dgrid'>
         <section className='dc span2'>
           <Title ic={IC.box}>Stock levels</Title>
-          {stockMsg && <p className='nok' role='status'>{stockMsg}</p>}
-          {prods.length === 0 && <p>No products yet. Add one on the Receive stock page.</p>}
+          {stockMsg && <p className='nerr' role='alert'>{stockMsg}</p>}
+          {prods.length === 0 && !stockMsg && <p>No products yet. Add one on the Receive stock page.</p>}
           {prods.map((p) => (
             <div className='nstock row' key={p[0]}>
               {p[7] ? <img className='pimg' src={p[7]} alt={p[0]} /> : <span className='nin'>{p[0][0]}</span>}
@@ -1190,11 +1207,11 @@ function Dashboard({ dark, setTheme, onExit }) {
         <section className='dc'>
           <Title ic={IC.star}>Suppliers</Title>
           {[...new Set(batches.map((b) => b[6]))].map((n) => <div className='npill col' key={n}><b className='l'>{n}</b></div>)}
-          {batches.length === 0 && <p>No suppliers yet.</p>}
+          {batches.length === 0 && !stockMsg && <p>No suppliers yet.</p>}
         </section>
         <section className='dc span3'>
           <Title ic={IC.receipt}>Purchases</Title>
-          {purchases.length === 0 && <p>No purchases yet.</p>}
+          {purchases.length === 0 && !stockMsg && <p>No purchases yet.</p>}
           {purchases.map(([it, sup, c, st, d], i) => (
             <div className='npill' key={it + i}><span className='nin xs'>{sup.slice(-1)}</span><span>{it}</span><span className='nmut'>{sup} · {d}</span><b>{money(c)}</b>
               <span className={'chipS ' + (st === 'Delivered' ? 'paid' : 'pend')}>{st}</span></div>
@@ -1264,7 +1281,7 @@ function Dashboard({ dark, setTheme, onExit }) {
               <button type='submit' className='btn iri nbtn' disabled={receiveBusy}>{receiveBusy ? 'Saving…' : 'Add to stock'}</button>
             </form>
             {rmsg && <p className='nok' role='status'>{rmsg}</p>}
-            {stockMsg && <p className='nok' role='status'>{stockMsg}</p>}
+            {stockMsg && <p className='nerr' role='alert'>{stockMsg}</p>}
           </section>
           <section className='dc'>
             <Title ic={IC.box}>Orders on the way</Title>
@@ -1303,8 +1320,8 @@ function Dashboard({ dark, setTheme, onExit }) {
       return (
         <>
           <div className='kpis'>
-            {[['Batches too old', slow.length, `older than ${limit} days`], ['Units stuck', units, 'still on the shelf'], ['Money tied up', money(tied), 'at cost price'], ['Oldest stock', oldest + ' days', 'since it arrived']].map(([l, v, s]) => (
-              <div className='kpi flat' key={l}><span className='dlab'>{l}</span><b>{v}</b><small>{s}</small></div>
+            {[['Batches too old', slow.length, `older than ${limit} days`], ['Units stuck', units, 'still on the shelf'], ['Money tied up', money(tied), 'at cost price'], ['Oldest stock', oldest + (oldest === 1 ? ' day' : ' days'), 'since it arrived']].map(([l, v, s]) => (
+              <div className='kpi flat metric' key={l}><span className='dlab'>{l}</span><b>{v}</b><small>{s}</small></div>
             ))}
           </div>
           <div className='dgrid'>

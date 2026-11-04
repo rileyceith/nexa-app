@@ -35,6 +35,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "django.middleware.gzip.GZipMiddleware",
     "api.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -73,6 +74,14 @@ else:
         }
     }
 
+# Shared across server processes so rate limits hold. Run `createcachetable` after migrate.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "nexa_cache",
+    }
+}
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -86,6 +95,7 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+MEDIA_ROOT = Path(os.environ.get("NEXA_MEDIA_ROOT", BASE_DIR / "media"))
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Magic links print to the console in development; configure SMTP via env for real delivery.
@@ -95,5 +105,13 @@ DEFAULT_FROM_EMAIL = os.environ.get("NEXA_FROM_EMAIL", "Nexa <no-reply@nexa.loca
 MAGIC_LINK_MINUTES = 15
 API_TOKEN_DAYS = 30
 
-NEXA_OPENAI_API_KEY = os.environ.get("NEXA_OPENAI_API_KEY", "")
-NEXA_OPENAI_MODEL = os.environ.get("NEXA_OPENAI_MODEL", "gpt-4o-mini")
+NEXA_AI_API_KEY = os.environ.get("NEXA_AI_API_KEY", "")
+NEXA_AI_BASE_URL = os.environ.get("NEXA_AI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+NEXA_AI_MODEL = os.environ.get("NEXA_AI_MODEL", "gemini-3.8-flash")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {"api": {"handlers": ["console"], "level": "INFO"}},
+}

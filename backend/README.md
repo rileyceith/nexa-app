@@ -8,10 +8,13 @@ JSON API for the Nexa dashboard. Dependencies are listed in `requirements.txt`: 
 cd backend
 pip install -r requirements.txt
 python manage.py migrate
+python manage.py createcachetable
 python manage.py seed_demo you@email.com   # optional sample data
 python manage.py runserver                 # http://127.0.0.1:8000
 python manage.py test
 ```
+
+Migration `0007` moves product photos that were stored in the database into files under `NEXA_MEDIA_ROOT`. Run `migrate` after pulling this change.
 
 Sign in with `POST /api/auth/login/` (`username`, `password`), or create an account with
 `POST /api/auth/register/`. Both return an API token. A passwordless alternative also exists:
@@ -23,14 +26,15 @@ Send it on every other request as `Authorization: Bearer <token>`. All data is s
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `auth/register/` `{username, password, password2, accepted_terms}` | Create an account (returns 201 and a token) |
+| POST | `auth/register/` `{username, email, password, password2, accepted_terms}` | Create an account (returns 201 and a token) |
 | POST | `auth/login/` `{username, password}` | Sign in with a username and password |
 | POST | `auth/request-link/` `{email}` | Email a sign-in link |
 | POST | `auth/verify/` `{token}` | Exchange link token for an API token |
 | POST | `auth/logout/` | Revoke the current token |
 | GET | `me/` | Current user |
 | GET, POST | `products/` | List (`?q=`) / create `{name, price, cost, category, target_stock, supplier}` |
-| GET, PATCH | `products/<id>/` | Read / update (`image` sets or clears the photo, 1 MB max) |
+| GET, PATCH | `products/<id>/` | Read / update (`image` sets or clears the photo, 1 MB max). Responses carry `image_url` instead of the image data |
+| GET | `images/<key>/?size=120\|400\|1000` | Public WebP product photo. Use the `image_url` from a product. Default size 400 |
 | GET, POST | `suppliers/` | List / create |
 | GET | `customers/` | Orders, spend, last purchase, products bought |
 | GET, POST | `sales/` | List (`?status=Paid\|Pending&q=`) / record `{customer, amount, status, product_id, quantity}` |
@@ -40,7 +44,7 @@ Send it on every other request as `Authorization: Bearer <token>`. All data is s
 | GET | `batches/` | Batches in stock (`?slow&min_age=45` for slow stock) |
 | GET, POST | `purchases/` | List / reorder `{product_id, quantity?, unit_cost?}` |
 | POST | `purchases/<id>/receive/` | Receive an order into stock |
-| POST | `receive/` | Receive stock `{product_id \| new_product_name+price, quantity, unit_cost, supplier, image?}`; `image` is an optional data URL (PNG, JPEG, WebP or GIF, 1 MB max) |
+| POST | `receive/` | Receive stock `{product_id \| new_product_name+price, quantity, unit_cost, supplier, image?}`; a new-product name matching an existing product adds stock to that product. `image` is an optional data URL (PNG, JPEG, WebP or GIF, 1 MB max) |
 | GET | `dashboard/?month=2026-10` | KPIs, change vs previous month, weekly sales, top products, forecast |
 | GET | `reports/` | Month-by-month results |
 | GET | `insights/` | Generated recommendations |
@@ -49,20 +53,26 @@ Send it on every other request as `Authorization: Bearer <token>`. All data is s
 | GET, PATCH | `settings/` `{revenue_goal?, goal_period?}` | Revenue goal (`day`, `week`, `month`, or `year`); `null` clears it. Returns the goal and its progress for the current period |
 | GET | `settings/series/` | Overview chart buckets for the goal period: `{period, target, current, buckets}` (each bucket has `start`, `end`, `amount`), or `null` without a goal. Counts every sale, with no row limit |
 
-Notes: money values are returned as strings. A sale linked to a product takes stock from the oldest
+Notes: money values are returned as strings with two decimal places, including zero totals (`"0.00"`). A sale linked to a product takes stock from the oldest
 batch first and uses the real batch cost for cost of goods; unlinked sales use a 60% cost estimate.
+Paging: `products/`, `sales/`, `expenses/`, `batches/`, and `purchases/` accept `?limit=` and `?offset=`.
+Responses carry an `X-Total-Count` header with the full count. Without `limit`, `products/`, `batches/`,
+and `purchases/` return every row, and `sales/` and `expenses/` return at most 500. `limit` is capped at 500.
+Negative or non-numeric values return 400.
+JSON responses are gzip-compressed when the client sends `Accept-Encoding: gzip`.
+Unexpected server errors return `{"error": ...}` with status 500 and are logged to the console. They are not HTML pages.
 
 ## Configuration (environment variables)
 
 `NEXA_DEBUG` (default `1`), `NEXA_SECRET_KEY` (required when debug is `0`), `NEXA_ALLOWED_HOSTS`,
 `NEXA_CORS_ORIGINS` (default allows `null`, i.e. the page opened from `file://`, and localhost dev ports),
 `NEXA_FRONTEND_URL` (base of the magic link), `NEXA_EMAIL_BACKEND`, `NEXA_FROM_EMAIL`,
-`NEXA_DATABASE_URL` (PostgreSQL URL; SQLite `db.sqlite3` is used when unset).
+`NEXA_DATABASE_URL` (PostgreSQL URL; SQLite `db.sqlite3` is used when unset), `NEXA_MEDIA_ROOT` (folder for product photos; default `media/` in the backend folder).
 
-The assistant requires `NEXA_OPENAI_API_KEY`; `NEXA_OPENAI_MODEL` defaults to `gpt-4o-mini`.
+The assistant requires `NEXA_AI_API_KEY` (a Google Gemini API key). `NEXA_AI_MODEL` defaults to `gemini-3.8-flash`, and `NEXA_AI_BASE_URL` defaults to Google's OpenAI-compatible endpoint.
 Keep the key in the server environment and never in frontend code. The assistant sends the user's
 question and an owner-scoped monthly aggregate (not customer details or individual transactions)
-to the configured OpenAI API. Names and record identifiers are excluded, and conversation
+to the configured AI provider (Google Gemini by default). Names and record identifiers are excluded, and conversation
 history is not persisted. Deterministic analyses run without an AI provider and use owner-scoped
 Django queries for profitability ratios, six-month sales trends and moving averages, expense
 category comparisons, and product revenue rankings.
@@ -73,7 +83,8 @@ category comparisons, and product revenue rankings.
 
 - The repository root has `render.yaml`. In Render, choose **New > Blueprint** and select this repository. It creates the `nexa-api` web service (root directory `backend`) and the `nexa-db` PostgreSQL database, sets the variables below, and connects `NEXA_DATABASE_URL` to the database.
 - The database uses the paid `basic-256mb` plan. Render's free PostgreSQL expires after 30 days, and its data is deleted 14 days after that.
-- Build: `pip install -r requirements.txt`. Pre-deploy: `python manage.py migrate`. Start: `gunicorn nexa.wsgi --bind 0.0.0.0:$PORT`.
+- Product photos are stored on a 1 GB disk mounted at `/var/data`. A Render disk allows only one instance, and each deploy restarts the service briefly.
+- Build: `pip install -r requirements.txt`. Start: `python manage.py migrate --noinput && python manage.py createcachetable && gunicorn nexa.wsgi --bind 0.0.0.0:$PORT`. Migrations run at start because a pre-deploy command cannot see the persistent disk.
 - Variables (the Blueprint sets these; for a manual setup, set them yourself):
 
   ```
@@ -83,6 +94,7 @@ category comparisons, and product revenue rankings.
   NEXA_CORS_ORIGINS=https://app.Nexa.com
   NEXA_FRONTEND_URL=https://app.Nexa.com/Nexa.html
   NEXA_DATABASE_URL=<Render Postgres internal URL>
+  NEXA_MEDIA_ROOT=/var/data/media
   ```
 
 - Add `api.Nexa-app.com` as a custom domain in Render, then add the CNAME record it shows at your DNS provider.

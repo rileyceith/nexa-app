@@ -51,7 +51,7 @@ class Product(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     cost = models.DecimalField(max_digits=10, decimal_places=2)
     target_stock = models.PositiveIntegerField(default=60)
-    image = models.TextField(blank=True, default="")
+    image_key = models.CharField(max_length=32, blank=True, default="")
     supplier = models.ForeignKey(Supplier, null=True, blank=True, on_delete=models.SET_NULL, related_name="products")
 
     class Meta:
@@ -73,10 +73,32 @@ class StockBatch(models.Model):
 
     class Meta:
         ordering = ["received_on", "id"]
+        indexes = [models.Index(fields=["owner", "product", "quantity_left"], name="batch_owner_product_idx")]
 
     @property
     def age_days(self):
         return (timezone.localdate() - self.received_on).days
+
+
+class StockMovement(models.Model):
+    """Append-only audit trail of stock in and out. StockBatch remains the FIFO source of truth."""
+    RECEIVE = "receive"
+    SALE = "sale"
+    KIND_CHOICES = [(RECEIVE, "Receive"), (SALE, "Sale")]
+
+    owner = models.ForeignKey(Owner, on_delete=models.CASCADE, related_name="stock_movements")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="movements")
+    batch = models.ForeignKey(StockBatch, null=True, blank=True, on_delete=models.SET_NULL, related_name="movements")
+    sale = models.ForeignKey("Sale", null=True, blank=True, on_delete=models.SET_NULL, related_name="movements")
+    kind = models.CharField(max_length=12, choices=KIND_CHOICES)
+    quantity = models.IntegerField()  # positive for stock in, negative for stock out
+    unit_cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    on = models.DateField(default=timezone.localdate)
+    note = models.CharField(max_length=160, blank=True, default="")
+
+    class Meta:
+        ordering = ["on", "id"]
+        indexes = [models.Index(fields=["owner", "product", "on"], name="movement_owner_product_idx")]
 
 
 class Customer(models.Model):
@@ -107,6 +129,7 @@ class Sale(models.Model):
 
     class Meta:
         ordering = ["-date", "-id"]
+        indexes = [models.Index(fields=["owner", "date"], name="sale_owner_date_idx")]
 
 
 class Expense(models.Model):
@@ -117,6 +140,7 @@ class Expense(models.Model):
 
     class Meta:
         ordering = ["-date", "-id"]
+        indexes = [models.Index(fields=["owner", "date"], name="expense_owner_date_idx")]
 
 
 class Purchase(models.Model):
@@ -135,6 +159,7 @@ class Purchase(models.Model):
 
     class Meta:
         ordering = ["-ordered_on", "-id"]
+        indexes = [models.Index(fields=["owner", "status"], name="purchase_owner_status_idx")]
 
     @property
     def total(self):

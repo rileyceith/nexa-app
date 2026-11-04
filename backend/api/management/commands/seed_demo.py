@@ -52,8 +52,13 @@ class Command(BaseCommand):
                                                cost=Decimal(str(cost)), target_stock=target, supplier=sup[s])
         for n, got, left, age in BATCHES:
             p = prod[n]
-            m.StockBatch.objects.create(owner=user, product=p, supplier=p.supplier, quantity_received=got,
-                                        quantity_left=left, unit_cost=p.cost, received_on=today - timedelta(days=age))
+            day = today - timedelta(days=age)
+            batch = m.StockBatch.objects.create(owner=user, product=p, supplier=p.supplier, quantity_received=got,
+                                                quantity_left=left, unit_cost=p.cost, received_on=day)
+            svc.log_movement(user, product=p, kind=m.StockMovement.RECEIVE, quantity=got, batch=batch, unit_cost=p.cost, on=day)
+            if got > left:
+                svc.log_movement(user, product=p, kind=m.StockMovement.SALE, quantity=left - got, batch=batch,
+                                 unit_cost=p.cost, on=day, note="Seed history")
         for who, n, qty, amt, status, ago in SALES:
             svc.record_sale(user, amount=Decimal(amt), customer_name=who, status=status,
                             product=prod[n], quantity=qty, on=today - timedelta(days=ago))

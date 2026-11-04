@@ -14,8 +14,13 @@ services:
     rootDir: backend
     plan: 0.5c-512mb
     buildCommand: pip install -r requirements.txt
-    preDeployCommand: python manage.py migrate
-    startCommand: gunicorn nexa.wsgi --bind 0.0.0.0:$PORT
+    # Migrations run at start, not in preDeployCommand: pre-deploy commands cannot see the persistent disk.
+    startCommand: python manage.py migrate --noinput && python manage.py createcachetable && gunicorn nexa.wsgi --bind 0.0.0.0:$PORT
+    # Product photos live on this disk. A disk allows only one instance and makes each deploy restart the service briefly.
+    disk:
+      name: nexa-media
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.13"
@@ -29,6 +34,8 @@ services:
         value: https://app.Nexa.com
       - key: NEXA_FRONTEND_URL
         value: https://app.Nexa.com/Nexa.html
+      - key: NEXA_MEDIA_ROOT
+        value: /var/data/media
       - key: NEXA_DATABASE_URL
         fromDatabase:
           name: nexa-db

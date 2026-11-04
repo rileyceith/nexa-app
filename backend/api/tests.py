@@ -1,15 +1,26 @@
 import base64
+import gzip
+import importlib
+import io
 import json
 import re
+import shutil
+import tempfile
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 
+from django.apps import apps
 from django.contrib.auth import get_user_model
-from django.core.cache import cache
+from django.core.cache import cache, caches
+from django.core.cache.backends.db import DatabaseCache
 from django.core import mail
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
+from PIL import Image
 from urllib.error import HTTPError
 
 from . import assistant as ai
@@ -21,13 +32,24 @@ def data_url(mime, raw):
     return f"data:{mime};base64," + base64.b64encode(raw).decode()
 
 
-PNG_URL = data_url("image/png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
-JPEG_URL = data_url("image/jpeg", b"\xff\xd8\xff\xe0" + b"\x00" * 8)
+def encoded(fmt, size):
+    buffer = io.BytesIO()
+    Image.new("RGB", size, (200, 80, 40)).save(buffer, fmt)
+    return buffer.getvalue()
+
+
+PNG_URL = data_url("image/png", encoded("PNG", (1200, 900)))
+JPEG_URL = data_url("image/jpeg", encoded("JPEG", (64, 64)))
 
 
 class ApiTests(TestCase):
     def setUp(self):
         cache.clear()
+        self.media_root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.media_root, True)
+        media = override_settings(MEDIA_ROOT=self.media_root)
+        media.enable()
+        self.addCleanup(media.disable)
         self.user = get_user_model().objects.create(username="a@x.com", email="a@x.com")
         self.h = {"HTTP_AUTHORIZATION": "Bearer " + svc.issue_token(self.user)}
         self.other = get_user_model().objects.create(username="b@x.com", email="b@x.com")
@@ -39,6 +61,20 @@ class ApiTests(TestCase):
     def product(self, **kw):
         body = {"name": "Earbuds", "price": "24", "cost": "14", "target_stock": 80, **kw}
         return self.post("/api/products/", body).json()
+
+    def upload(self, image=PNG_URL):
+        r = self.post("/api/receive/", {"new_product_name": "Mug", "price": "12", "unit_cost": "5", "quantity": 4, "image": image})
+        self.assertEqual(r.status_code, 201)
+        return r.json()["product"]["image_url"]
+
+    def stored_images(self):
+        folder = Path(self.media_root, "products")
+        return sorted(folder.iterdir()) if folder.exists() else []
+
+    def image_status(self, url):
+        response = self.client.get(url)
+        response.close()
+        return response.status_code
 
     def test_requires_auth(self):
         self.assertEqual(self.client.get("/api/products/").status_code, 401)
@@ -56,10 +92,11 @@ class ApiTests(TestCase):
         self.assertEqual(self.post("/api/auth/request-link/", {"email": "nope"}, {}).status_code, 400)
 
     def test_register_and_login(self):
-        body = {"username": "riley", "password": "Str0ng-pass-92", "password2": "Str0ng-pass-92", "accepted_terms": True}
+        body = {"username": "riley", "email": "Riley@example.com", "password": "Str0ng-pass-92", "password2": "Str0ng-pass-92", "accepted_terms": True}
         r = self.post("/api/auth/register/", body, {})
         self.assertEqual(r.status_code, 201)
         self.assertTrue(m.TermsAcceptance.objects.filter(user__username="riley").exists())
+        self.assertEqual(get_user_model().objects.get(username="riley").email, "riley@example.com")
         self.assertEqual(self.post("/api/auth/register/", body, {}).status_code, 409)
         r = self.post("/api/auth/login/", {"username": "RILEY", "password": "Str0ng-pass-92"}, {})
         self.assertEqual(r.status_code, 200)
@@ -67,8 +104,8 @@ class ApiTests(TestCase):
         self.assertEqual(me.json()["username"], "riley")
 
     def test_register_validation(self):
-        ok = {"username": "sam", "password": "Str0ng-pass-92", "password2": "Str0ng-pass-92", "accepted_terms": True}
-        for change in ({"password2": "different"}, {"accepted_terms": False}, {"accepted_terms": "true"},
+        ok = {"username": "sam", "email": "sam@example.com", "password": "Str0ng-pass-92", "password2": "Str0ng-pass-92", "accepted_terms": True}
+        for change in ({"email": ""}, {"email": "not-an-email"}, {"password2": "different"}, {"accepted_terms": False}, {"accepted_terms": "true"},
                        {"password": "123", "password2": "123"}, {"username": "a b"}):
             self.assertEqual(self.post("/api/auth/register/", {**ok, **change}, {}).status_code, 400, change)
 
@@ -96,6 +133,124 @@ class ApiTests(TestCase):
         self.assertEqual(r.status_code, 409)
         self.assertEqual(m.Sale.objects.count(), 0)
 
+    def test_stock_ledger_reconciles_with_batches(self):
+        p = self.product()
+        self.post("/api/receive/", {"product_id": p["id"], "quantity": 10, "unit_cost": "10"})
+        self.post("/api/receive/", {"product_id": p["id"], "quantity": 10, "unit_cost": "20"})
+        self.post("/api/sales/", {"amount": "300", "product_id": p["id"], "quantity": 15})
+        product = m.Product.objects.get(pk=p["id"])
+        self.assertEqual(svc.stock_of(product), 5)
+        self.assertEqual(svc.ledger_balance(product), 5)
+        sale_moves = m.StockMovement.objects.filter(kind=m.StockMovement.SALE)
+        self.assertEqual(sorted(mv.quantity for mv in sale_moves), [-10, -5])
+        self.assertTrue(all(mv.sale_id for mv in sale_moves))
+
+    def test_ledger_backfill_matches_existing_batches(self):
+        migration = importlib.import_module("api.migrations.0005_stockmovement")
+        p = self.product()
+        self.post("/api/receive/", {"product_id": p["id"], "quantity": 10, "unit_cost": "10"})
+        self.post("/api/sales/", {"amount": "50", "product_id": p["id"], "quantity": 4})
+        product = m.Product.objects.get(pk=p["id"])
+        m.StockMovement.objects.all().delete()
+        migration.backfill_from_batches(apps, None)
+        self.assertEqual(svc.ledger_balance(product), svc.stock_of(product))
+
+    def stock_up(self, name, supplier=None):
+        p = m.Product.objects.create(owner=self.user, name=name, price=Decimal("10"), cost=Decimal("4"),
+                                     target_stock=20, supplier=supplier)
+        svc.receive_stock(self.user, product=p, quantity=5, unit_cost=Decimal("4"), supplier=supplier)
+        return p
+
+    def query_count(self, url):
+        with CaptureQueriesContext(connection) as ctx:
+            self.assertEqual(self.client.get(url, **self.h).status_code, 200)
+        return len(ctx)
+
+    def test_list_queries_do_not_grow_with_catalogue_size(self):
+        supplier = m.Supplier.objects.create(owner=self.user, name="Acme")
+        self.stock_up("Earbuds", supplier)
+        urls = ["/api/products/", "/api/stock/", "/api/customers/", "/api/insights/", "/api/dashboard/"]
+        before = {url: self.query_count(url) for url in urls}
+        for i in range(6):
+            p = self.stock_up(f"Item {i}", supplier)
+            svc.record_sale(self.user, amount=Decimal("10"), customer_name=f"Buyer {i}", product=p)
+        self.assertEqual({url: self.query_count(url) for url in urls}, before)
+
+    def test_customer_lists_each_product_once_across_repeat_orders(self):
+        product = self.stock_up("Earbuds")
+        for day in (1, 2):
+            svc.record_sale(self.user, amount=Decimal("10"), customer_name="Repeat", product=product, on=date(2026, 1, day))
+        customers = self.client.get("/api/customers/", **self.h).json()
+        self.assertEqual(customers[0]["products"], ["Earbuds"])
+
+    def test_hot_query_indexes_exist(self):
+        expected = {
+            "api_sale": "sale_owner_date_idx",
+            "api_expense": "expense_owner_date_idx",
+            "api_purchase": "purchase_owner_status_idx",
+            "api_stockbatch": "batch_owner_product_idx",
+            "api_stockmovement": "movement_owner_product_idx",
+        }
+        with connection.cursor() as cursor:
+            for table, index in expected.items():
+                self.assertIn(index, connection.introspection.get_constraints(cursor, table), table)
+
+    def test_json_responses_are_gzipped_when_accepted(self):
+        for i in range(10):
+            self.product(name=f"Gzip item {i}")
+        r = self.client.get("/api/products/", HTTP_ACCEPT_ENCODING="gzip", **self.h)
+        self.assertEqual(r["Content-Encoding"], "gzip")
+        self.assertEqual(len(json.loads(gzip.decompress(r.content))), 10)
+        plain = self.client.get("/api/products/", **self.h)
+        self.assertFalse(plain.has_header("Content-Encoding"))
+
+    def test_list_endpoints_page_with_limit_offset_and_total_header(self):
+        for name in ("P0", "P1", "P2", "P3", "P4"):
+            self.product(name=name)
+        r = self.client.get("/api/products/?limit=2&offset=1", **self.h)
+        self.assertEqual([p["name"] for p in r.json()], ["P1", "P2"])
+        self.assertEqual(r["X-Total-Count"], "5")
+        r = self.client.get("/api/products/", HTTP_ORIGIN="null", **self.h)
+        self.assertEqual(len(r.json()), 5)
+        self.assertEqual(r["X-Total-Count"], "5")
+        self.assertEqual(r["Access-Control-Expose-Headers"], "X-Total-Count")
+
+        for amount in ("10", "20", "30"):
+            self.post("/api/sales/", {"amount": amount, "customer": "Tendai"})
+        r = self.client.get("/api/sales/?limit=2", **self.h)
+        self.assertEqual(len(r.json()), 2)
+        self.assertEqual(r["X-Total-Count"], "3")
+
+        for amount in ("5", "7", "9"):
+            self.post("/api/expenses/", {"category": "Rent", "amount": amount})
+        r = self.client.get("/api/expenses/?limit=2", **self.h)
+        body = r.json()
+        self.assertEqual(len(body["items"]), 2)
+        self.assertEqual(r["X-Total-Count"], "3")
+        self.assertEqual(Decimal(str(body["total"])), Decimal("21"))
+
+        p = self.product(name="Bulb")
+        for qty in (1, 2, 3):
+            self.post("/api/receive/", {"product_id": p["id"], "quantity": qty, "unit_cost": "10"})
+        r = self.client.get("/api/batches/?limit=2", **self.h)
+        self.assertEqual(len(r.json()), 2)
+        self.assertEqual(r["X-Total-Count"], "3")
+
+        for _ in range(3):
+            self.post("/api/purchases/", {"product_id": p["id"]})
+        total = m.Purchase.objects.filter(owner=self.user).count()  # receipts also log a delivered purchase
+        r = self.client.get("/api/purchases/?limit=1&offset=2", **self.h)
+        self.assertEqual(len(r.json()), 1)
+        self.assertEqual(r["X-Total-Count"], str(total))
+
+    def test_page_parameters_are_validated_and_clamped(self):
+        self.product(name="First")
+        self.product(name="Second")
+        for query in ("limit=abc", "limit=-1", "offset=-1", "offset=x"):
+            self.assertEqual(self.client.get(f"/api/products/?{query}", **self.h).status_code, 400, query)
+        with patch("api.views.MAX_PAGE_SIZE", 1):
+            self.assertEqual(len(self.client.get("/api/products/?limit=50", **self.h).json()), 1)
+
     def test_data_is_isolated_per_user(self):
         p = self.product()
         self.assertEqual(self.client.get("/api/products/", **self.other_h).json(), [])
@@ -122,33 +277,94 @@ class ApiTests(TestCase):
         self.assertEqual(self.post(f"/api/purchases/{order['id']}/receive/", {}).status_code, 409)
         self.assertEqual(self.client.get("/api/stock/", **self.h).json()[0]["in_stock"], 20)
 
+    def test_double_receive_does_not_duplicate_stock(self):
+        p = self.product()
+        order = self.post("/api/purchases/", {"product_id": p["id"], "quantity": 20}).json()
+        self.post(f"/api/purchases/{order['id']}/receive/", {})
+        self.post(f"/api/purchases/{order['id']}/receive/", {})
+        self.assertEqual(m.StockBatch.objects.count(), 1)
+        self.assertEqual(svc.stock_of(m.Product.objects.get(pk=p["id"])), 20)
+
+    def test_duplicate_product_race_returns_409(self):
+        self.product()
+        with patch("api.views.m.Product.objects.filter") as filtered:
+            filtered.return_value.exists.return_value = False
+            r = self.post("/api/products/", {"name": "Earbuds", "price": "24", "cost": "14"})
+        self.assertEqual(r.status_code, 409)
+
+    def test_duplicate_new_product_race_returns_409(self):
+        self.post("/api/receive/", {"new_product_name": "Mug", "price": "12", "unit_cost": "5", "quantity": 4})
+        with patch("api.views.m.Product.objects.filter") as filtered:
+            filtered.return_value.first.return_value = None
+            r = self.post("/api/receive/", {"new_product_name": "Mug", "price": "12", "unit_cost": "5", "quantity": 4})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(m.StockBatch.objects.count(), 1)
+
+    def test_unexpected_errors_return_json_500_and_are_logged(self):
+        self.product()
+        with patch("api.services.with_stock", side_effect=RuntimeError("boom")), self.assertLogs("api", level="ERROR"):
+            r = self.client.get("/api/products/", **self.h)
+        self.assertEqual(r.status_code, 500)
+        self.assertEqual(r["Content-Type"], "application/json")
+        self.assertIn("error", r.json())
+
+    def test_money_fields_are_two_decimal_strings_even_when_empty(self):
+        self.assertEqual(self.client.get("/api/expenses/", **self.h).json()["total"], "0.00")
+        self.assertEqual(self.client.get("/api/dashboard/", **self.h).json()["pending_payments"]["total"], "0.00")
+        self.post("/api/sales/", {"amount": "50", "customer": "Ada"})
+        self.assertEqual(self.client.get("/api/customers/", **self.h).json()[0]["spent"], "50.00")
+
     def test_receive_stores_image_for_new_product(self):
         r = self.post("/api/receive/", {"new_product_name": "Mug", "price": "12", "unit_cost": "5", "quantity": 4, "image": PNG_URL})
         self.assertEqual(r.status_code, 201)
         product_id = r.json()["product"]["id"]
-        self.assertEqual(r.json()["product"]["image"], PNG_URL)
-        self.assertEqual(self.client.get(f"/api/products/{product_id}/", **self.h).json()["image"], PNG_URL)
+        image_url = r.json()["product"]["image_url"]
+        self.assertNotIn("image", r.json()["product"])
+        self.assertTrue(image_url.startswith("/api/images/"))
+        self.assertEqual(self.client.get(f"/api/products/{product_id}/", **self.h).json()["image_url"], image_url)
+        self.assertEqual(self.client.get(image_url).status_code, 200)
+        self.assertEqual(len(self.stored_images()), 1)
 
     def test_new_product_without_image_has_empty_image(self):
         r = self.post("/api/receive/", {"new_product_name": "Mug", "price": "12", "unit_cost": "5", "quantity": 4})
         self.assertEqual(r.status_code, 201)
-        self.assertEqual(r.json()["product"]["image"], "")
+        self.assertEqual(r.json()["product"]["image_url"], "")
+
+    def test_receiving_existing_product_name_adds_batch_to_existing_product(self):
+        product = self.product(name="Mug", price="12")
+        response = self.post("/api/receive/", {
+            "new_product_name": "  mug  ", "quantity": 4, "unit_cost": "5", "supplier": "Acme",
+        })
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["product"]["id"], product["id"])
+        self.assertEqual(response.json()["product"]["name"], "Mug")
+        self.assertEqual(m.Product.objects.filter(owner=self.user, name__iexact="Mug").count(), 1)
+        self.assertEqual(m.StockBatch.objects.filter(owner=self.user, product_id=product["id"]).count(), 1)
+        self.assertEqual(m.StockBatch.objects.get(product_id=product["id"]).quantity_left, 4)
 
     def test_existing_product_image_is_replaced_kept_and_cleared(self):
         p = self.product()
         url = f"/api/products/{p['id']}/"
         self.post("/api/receive/", {"product_id": p["id"], "quantity": 2, "unit_cost": "10", "image": PNG_URL})
-        self.assertEqual(self.client.get(url, **self.h).json()["image"], PNG_URL)
+        first = self.client.get(url, **self.h).json()["image_url"]
+        self.assertEqual(self.image_status(first), 200)
 
         self.post("/api/receive/", {"product_id": p["id"], "quantity": 1, "unit_cost": "10"})
-        self.assertEqual(self.client.get(url, **self.h).json()["image"], PNG_URL)
+        self.assertEqual(self.client.get(url, **self.h).json()["image_url"], first)
 
         self.post("/api/receive/", {"product_id": p["id"], "quantity": 1, "unit_cost": "10", "image": JPEG_URL})
-        self.assertEqual(self.client.get(url, **self.h).json()["image"], JPEG_URL)
+        second = self.client.get(url, **self.h).json()["image_url"]
+        self.assertNotEqual(second, first)
+        self.assertEqual(self.image_status(second), 200)
+        self.assertEqual(self.image_status(first), 404)
+        self.assertEqual(len(self.stored_images()), 1)
 
         r = self.client.patch(url, data=json.dumps({"image": ""}), content_type="application/json", **self.h)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(self.client.get(url, **self.h).json()["image"], "")
+        self.assertEqual(self.client.get(url, **self.h).json()["image_url"], "")
+        self.assertEqual(self.image_status(second), 404)
+        self.assertEqual(self.stored_images(), [])
 
     def test_invalid_images_are_rejected_before_anything_is_written(self):
         invalid = {
@@ -156,23 +372,73 @@ class ApiTests(TestCase):
             "not a data url": "https://example.com/a.png",
             "malformed base64": "data:image/png;base64,@@@",
             "too large": data_url("image/png", b"0" * (1024 * 1024 + 1)),
+            "undecodable": data_url("image/png", b"not really a png"),
         }
         for label, image in invalid.items():
             r = self.post("/api/receive/", {"new_product_name": "Mug", "price": "12", "unit_cost": "5", "quantity": 4, "image": image})
             self.assertEqual(r.status_code, 400, label)
         self.assertFalse(m.Product.objects.filter(owner=self.user).exists())
         self.assertFalse(m.StockBatch.objects.exists())
+        self.assertEqual(self.stored_images(), [])
 
     def test_invalid_image_on_existing_product_keeps_current_image(self):
         p = self.product()
         url = f"/api/products/{p['id']}/"
         self.post("/api/receive/", {"product_id": p["id"], "quantity": 1, "unit_cost": "10", "image": PNG_URL})
+        current = self.client.get(url, **self.h).json()["image_url"]
         r = self.client.patch(url, data=json.dumps({"image": data_url("text/html", b"<h1>x</h1>")}), content_type="application/json", **self.h)
         self.assertEqual(r.status_code, 400)
         r = self.post("/api/receive/", {"product_id": p["id"], "quantity": 1, "unit_cost": "10", "image": "not-an-image"})
         self.assertEqual(r.status_code, 400)
-        self.assertEqual(self.client.get(url, **self.h).json()["image"], PNG_URL)
+        self.assertEqual(self.client.get(url, **self.h).json()["image_url"], current)
+        self.assertEqual(self.client.get(current).status_code, 200)
         self.assertEqual(m.StockBatch.objects.filter(product_id=p["id"]).count(), 1)
+        self.assertEqual(len(self.stored_images()), 1)
+
+    def test_renaming_onto_an_existing_product_returns_409_and_leaves_no_new_image(self):
+        self.product(name="Mug")
+        p = self.product(name="Plate")
+        url = f"/api/products/{p['id']}/"
+        r = self.client.patch(url, data=json.dumps({"name": "Mug"}), content_type="application/json", **self.h)
+        self.assertEqual(r.status_code, 409)
+        r = self.client.patch(url, data=json.dumps({"name": "Mug", "image": PNG_URL}), content_type="application/json", **self.h)
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(self.stored_images(), [])
+        self.assertEqual(self.client.get(url, **self.h).json()["name"], "Plate")
+
+    def test_product_payloads_expose_image_url_not_inline_data(self):
+        self.upload()
+        product = self.client.get("/api/products/", **self.h).json()[0]
+        self.assertNotIn("image", product)
+        self.assertTrue(product["image_url"].startswith("/api/images/"))
+        self.assertNotIn("data:image", json.dumps(product))
+
+    def test_image_endpoint_serves_webp_at_the_requested_size(self):
+        image_url = self.upload()
+        cases = {None: 400, 50: 120, 120: 120, 400: 400, 900: 1000, 5000: 1000}
+        for requested, expected in cases.items():
+            params = {} if requested is None else {"size": requested}
+            r = self.client.get(image_url, params)
+            self.assertEqual(r.status_code, 200, requested)
+            self.assertEqual(r["Content-Type"], "image/webp")
+            picture = Image.open(io.BytesIO(b"".join(r.streaming_content)))
+            self.assertEqual(picture.format, "WEBP")
+            self.assertEqual(max(picture.size), expected, requested)
+
+    def test_image_endpoint_is_public_cacheable_and_supports_etags(self):
+        image_url = self.upload()
+        key = image_url.strip("/").split("/")[-1]
+        r = self.client.get(image_url, {"size": 120})
+        self.assertEqual(r["ETag"], f'"{key}-120"')
+        self.assertEqual(r["Cache-Control"], "public, max-age=86400")
+        r = self.client.get(image_url, {"size": 120}, HTTP_IF_NONE_MATCH=f'"{key}-120"')
+        self.assertEqual(r.status_code, 304)
+
+    def test_image_endpoint_rejects_unknown_keys_and_bad_sizes(self):
+        image_url = self.upload()
+        self.assertEqual(self.client.get("/api/images/not-a-key/").status_code, 404)
+        self.assertEqual(self.client.get("/api/images/" + "0" * 32 + "/").status_code, 404)
+        self.assertEqual(self.client.get(image_url, {"size": "big"}).status_code, 400)
 
     def test_cors_preflight(self):
         r = self.client.options("/api/sales/", HTTP_ORIGIN="null", HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST")
@@ -190,6 +456,13 @@ class ApiTests(TestCase):
         self.assertEqual(self.post("/api/assistant/chat/", {"question": "x" * 1001}).status_code, 400)
         self.assertEqual(self.post("/api/assistant/chat/", {"question": "How am I doing?", "month": "Nov"}).status_code, 400)
         self.assertEqual(self.post("/api/assistant/chat/", {"question": "x" * 5000}).status_code, 413)
+
+    @patch("api.assistant.generate_answer", return_value="Steady.")
+    def test_assistant_rate_limit_persists_in_database_cache(self, _):
+        self.assertIsInstance(caches["default"], DatabaseCache)
+        for _ in range(10):
+            self.assertEqual(self.post("/api/assistant/chat/", {"question": "How am I doing?"}).status_code, 200)
+        self.assertEqual(self.post("/api/assistant/chat/", {"question": "How am I doing?"}).status_code, 429)
 
     @patch("api.assistant.generate_answer", return_value="Revenue was $120.")
     def test_assistant_uses_only_requesting_owners_aggregated_financial_context(self, generate_answer):
@@ -220,7 +493,7 @@ class ApiTests(TestCase):
         self.assertNotIn("Private customer", str(context))
         self.assertNotIn("Private product", str(context))
 
-    @override_settings(NEXA_OPENAI_API_KEY="")
+    @override_settings(NEXA_AI_API_KEY="")
     def test_assistant_reports_missing_provider_configuration(self):
         response = self.post("/api/assistant/chat/", {"question": "How am I doing?"})
         self.assertEqual(response.status_code, 503)
@@ -234,26 +507,41 @@ class ApiTests(TestCase):
         self.assertEqual(responses[-1].status_code, 429)
         self.assertEqual(generate_answer.call_count, 10)
 
-    @override_settings(NEXA_OPENAI_API_KEY="server-only-key", NEXA_OPENAI_MODEL="test-model")
+    @override_settings(NEXA_AI_API_KEY="server-only-key", NEXA_AI_MODEL="test-model")
     @patch("api.assistant.urlopen")
     def test_assistant_provider_uses_server_key_and_parses_response(self, urlopen):
-        urlopen.return_value.__enter__.return_value.read.return_value = b'{"output_text":"A grounded answer."}'
+        urlopen.return_value.__enter__.return_value.read.return_value = (
+            b'{"choices":[{"message":{"content":"A grounded answer."}}]}'
+        )
         answer = ai.generate_answer("How did I do?", {"period": "2026-10", "currency": "USD"})
 
         self.assertEqual(answer, "A grounded answer.")
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer server-only-key")
+        self.assertEqual(
+            request.full_url,
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
         self.assertIn("Question: How did I do?", request.data.decode())
         self.assertEqual(json.loads(request.data)["model"], "test-model")
 
-    @override_settings(NEXA_OPENAI_API_KEY="server-only-key")
-    @patch("api.assistant.urlopen", side_effect=HTTPError("https://api.openai.com", 429, "busy", {}, None))
+    @override_settings(NEXA_AI_API_KEY="server-only-key")
+    @patch("api.assistant.urlopen", side_effect=HTTPError("https://generativelanguage.googleapis.com", 429, "busy", {}, None))
     def test_assistant_provider_errors_are_sanitized(self, _urlopen):
         with self.assertRaises(svc.ServiceError) as error:
             ai.generate_answer("Question", {"period": "2026-10"})
 
         self.assertEqual(error.exception.status, 502)
         self.assertNotIn("server-only-key", error.exception.message)
+
+    @override_settings(NEXA_AI_API_KEY="server-only-key")
+    @patch("api.assistant.urlopen")
+    def test_assistant_provider_rejects_responses_without_answer_text(self, urlopen):
+        urlopen.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":null}}]}'
+        with self.assertRaises(svc.ServiceError) as error:
+            ai.generate_answer("Question", {"period": "2026-10"})
+
+        self.assertEqual(error.exception.status, 502)
 
     def test_algorithm_endpoint_requires_authentication_and_valid_analysis(self):
         response = self.client.post(

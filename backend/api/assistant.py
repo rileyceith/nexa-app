@@ -24,22 +24,28 @@ INSTRUCTIONS = (
 
 
 def generate_answer(question, context):
-    api_key = settings.NEXA_OPENAI_API_KEY
+    api_key = settings.NEXA_AI_API_KEY
     if not api_key:
         raise ServiceError("The AI assistant is not configured yet.", 503)
 
     payload = json.dumps({
-        "model": settings.NEXA_OPENAI_MODEL,
-        "instructions": INSTRUCTIONS,
-        "input": (
-            f"Question: {question}\n\n"
-            "Verified, aggregated financial summary (JSON):\n"
-            f"{json.dumps(context, ensure_ascii=False)}"
-        ),
-        "max_output_tokens": 400,
+        "model": settings.NEXA_AI_MODEL,
+        "messages": [
+            {"role": "system", "content": INSTRUCTIONS},
+            {
+                "role": "user",
+                "content": (
+                    f"Question: {question}\n\n"
+                    "Verified, aggregated financial summary (JSON):\n"
+                    f"{json.dumps(context, ensure_ascii=False)}"
+                ),
+            },
+        ],
+        "max_tokens": 1024,
+        "reasoning_effort": "minimal",
     }).encode("utf-8")
     request = Request(
-        "https://api.openai.com/v1/responses",
+        f"{settings.NEXA_AI_BASE_URL.rstrip('/')}/chat/completions",
         data=payload,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
@@ -57,26 +63,12 @@ def generate_answer(question, context):
         logger.warning("AI provider returned an invalid response.")
         raise ServiceError("The AI assistant returned an invalid response. Try again shortly.", 502) from None
 
-    if not isinstance(data, dict):
-        logger.warning("AI provider returned an invalid response.")
-        raise ServiceError("The AI assistant returned an invalid response. Try again shortly.", 502)
-    answer = data.get("output_text")
-    if not answer:
-        output = data.get("output", [])
-        if not isinstance(output, list):
-            output = []
-        text_parts = []
-        for item in output:
-            if not isinstance(item, dict):
-                continue
-            content = item.get("content", [])
-            if isinstance(content, list):
-                text_parts.extend(
-                    part["text"] for part in content
-                    if isinstance(part, dict) and part.get("type") == "output_text"
-                    and isinstance(part.get("text"), str)
-                )
-        answer = "\n".join(text_parts)
+    answer = None
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        if isinstance(message, dict):
+            answer = message.get("content")
     if not isinstance(answer, str) or not answer.strip():
         logger.warning("AI provider response did not contain answer text.")
         raise ServiceError("The AI assistant returned an invalid response. Try again shortly.", 502)
