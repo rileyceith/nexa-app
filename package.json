@@ -1,0 +1,23 @@
+{
+  "name": "nexa-frontend",
+  "private": true,
+  "scripts": {
+    "build:frontend": "babel frontend/Nexa.jsx --presets @babel/preset-react --no-babelrc --out-file frontend/Nexa.js",
+    "build:mobile": "npm run build:frontend && node scripts/build-mobile.cjs",
+    "sync:mobile": "npm run build:mobile && cap sync",
+    "test:mobile": "node --test scripts/mobile.test.cjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.0",
+    "@capacitor/core": "8.6.0",
+    "@capacitor/ios": "8.6.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.0",
+    "@babel/cli": "^7.24.7",
+    "@babel/core": "^7.24.7",
+    "@babel/preset-react": "^7.24.7"
+  }
+}

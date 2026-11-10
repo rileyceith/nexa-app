@@ -1,4 +1,5 @@
 import hashlib
+import re
 import secrets
 from calendar import monthrange
 from datetime import date, timedelta
@@ -10,9 +11,9 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.core.validators import validate_email
-from django.db import transaction
-from django.db.models import Count, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db import IntegrityError, transaction
+from django.db.models import Count, Q, Sum, Value
+from django.db.models.functions import Coalesce, Lower, Trim
 from django.utils import timezone
 
 from . import models as m
@@ -56,29 +57,50 @@ def send_magic_link(email):
     )
 
 
+def users_with_email(email):
+    return get_user_model().objects.annotate(normalized_email=Lower(Trim("email"))).filter(
+        normalized_email=email
+    )
+
+
+def initialize_business_data(user):
+    m.UserSettings.objects.get_or_create(owner=user)
+
+
 @transaction.atomic
 def verify_magic_link(token):
     link = m.MagicLink.objects.select_for_update().filter(token_hash=_hash(token)).first()
     if not link or link.used_at or link.expires_at < timezone.now():
         raise ServiceError("This sign-in link is invalid or has expired.", 400)
+    email = link.email.strip().lower()
+    User = get_user_model()
+    user = users_with_email(email).first()
+    if user is None:
+        username = email
+        if len(username) > 150 or User.objects.filter(username__iexact=username).exists():
+            username = "email_" + secrets.token_hex(16)
+        try:
+            with transaction.atomic():
+                user = User.objects.create_user(username=username, email=email)
+        except IntegrityError:
+            user = users_with_email(email).first()
+            if user is None:
+                raise
+    if not user.is_active:
+        raise ServiceError("This account is inactive.", 403)
+    initialize_business_data(user)
     link.used_at = timezone.now()
     link.save(update_fields=["used_at"])
-    User = get_user_model()
-    user, created = User.objects.get_or_create(username=link.email, defaults={"email": link.email})
-    if created:
-        user.set_unusable_password()
-        user.save(update_fields=["password"])
     return user, issue_token(user)
 
 
 TERMS_VERSION = "1"
 
 
-@transaction.atomic
 def register(username, email, password, password2, accepted_terms):
     username = (username or "").strip()
-    if not (3 <= len(username) <= 30) or not username.replace("_", "").replace(".", "").replace("-", "").isalnum():
-        raise ServiceError("Username must be 3 to 30 letters, numbers, dots, dashes or underscores.")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,30}", username):
+        raise ServiceError("Username must be 3 to 30 ASCII letters, numbers, dots, dashes or underscores.")
     email = (email or "").strip().lower()
     try:
         validate_email(email)
@@ -89,17 +111,22 @@ def register(username, email, password, password2, accepted_terms):
     if accepted_terms is not True:
         raise ServiceError("You must accept the terms and conditions.")
     User = get_user_model()
-    if User.objects.filter(username__iexact=username).exists():
-        raise ServiceError("That username is taken.", 409)
+    if User.objects.filter(username__iexact=username).exists() or users_with_email(email).exists():
+        raise ServiceError("That username or email is already in use. Please sign in.", 409)
     try:
         validate_password(password, User(username=username, email=email))
     except DjangoValidationError as e:
         raise ServiceError(" ".join(e.messages))
-    user = User.objects.create_user(username=username, password=password)
-    user.email = email
-    user.save(update_fields=["email"])
-    m.TermsAcceptance.objects.create(user=user, version=TERMS_VERSION)
-    return user, issue_token(user)
+    try:
+        with transaction.atomic():
+            user = User.objects.create_user(username=username, email=email, password=password)
+            initialize_business_data(user)
+            m.TermsAcceptance.objects.create(user=user, version=TERMS_VERSION)
+            return user, issue_token(user)
+    except IntegrityError:
+        if User.objects.filter(username__iexact=username).exists() or users_with_email(email).exists():
+            raise ServiceError("That username or email is already in use. Please sign in.", 409)
+        raise
 
 
 def login(username, password):
@@ -227,7 +254,7 @@ def month_bounds(year, month):
 def month_summary(owner, year, month):
     start, end = month_bounds(year, month)
     sales = m.Sale.objects.filter(owner=owner, date__range=(start, end))
-    totals = sales.aggregate(rev=Sum("amount"), cogs=Sum("cogs"))
+    totals = sales.filter(status=m.Sale.PAID).aggregate(rev=Sum("amount"), cogs=Sum("cogs"))
     rev, cogs = totals["rev"] or Decimal(0), totals["cogs"] or Decimal(0)
     exp = m.Expense.objects.filter(owner=owner, date__range=(start, end)).aggregate(t=Sum("amount"))["t"] or Decimal(0)
     gross = rev - cogs
@@ -262,7 +289,10 @@ def goal_bounds(period, today):
 
 def goal_progress(owner, goal, period):
     start, end = goal_bounds(period, timezone.localdate())
-    revenue = m.Sale.objects.filter(owner=owner, date__range=(start, end)).aggregate(t=Sum("amount"))["t"] or Decimal(0)
+    revenue = (
+        m.Sale.objects.filter(owner=owner, status=m.Sale.PAID, date__range=(start, end))
+        .aggregate(t=Sum("amount"))["t"] or Decimal(0)
+    )
     return {
         "period": period,
         "start": start,
@@ -280,7 +310,7 @@ def shift_month(year, month, delta):
 
 
 def goal_series(owner, goal, period, today):
-    """Sales per bucket for the Overview goal chart: the days, weeks, or months of the goal period."""
+    """Paid revenue per bucket for the Overview goal chart: the days, weeks, or months of the goal period."""
     if period == m.UserSettings.DAY:
         first = date(today.year, today.month, 1)
         days = [first + timedelta(days=i) for i in range(monthrange(today.year, today.month)[1])]
@@ -299,7 +329,7 @@ def goal_series(owner, goal, period, today):
         current, target = today.month - 1, goal / 12
     daily = [
         (row["date"], row["total"])
-        for row in m.Sale.objects.filter(owner=owner, date__range=(spans[0][0], spans[-1][1]))
+        for row in m.Sale.objects.filter(owner=owner, status=m.Sale.PAID, date__range=(spans[0][0], spans[-1][1]))
         .order_by().values("date").annotate(total=Sum("amount"))
     ]
     return {
@@ -339,7 +369,7 @@ def assistant_context(owner, year, month):
     )
     products = (
         sales.exclude(product=None).values("product__category")
-        .annotate(units=Sum("quantity"), revenue=Sum("amount")).order_by("-units")[:5]
+        .annotate(units=Sum("quantity"), revenue=Sum("amount", filter=Q(status=m.Sale.PAID))).order_by("-units")[:5]
     )
     return {
         "period": current["month"],

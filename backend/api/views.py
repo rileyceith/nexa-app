@@ -256,7 +256,7 @@ def logout(request):
 
 @api("GET")
 def me(request):
-    return ok({"id": request.owner.id, "username": request.owner.username, "email": request.owner.email})
+    return ok({"id": request.owner.id, "username": request.owner.username, "email": request.owner.email, "is_staff": request.owner.is_staff})
 
 
 # ---------- catalogue ----------

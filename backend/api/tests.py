@@ -16,7 +16,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache, caches
 from django.core.cache.backends.db import DatabaseCache
 from django.core import mail
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -102,12 +102,86 @@ class ApiTests(TestCase):
         self.assertEqual(r.status_code, 200)
         me = self.client.get("/api/me/", HTTP_AUTHORIZATION="Bearer " + r.json()["token"])
         self.assertEqual(me.json()["username"], "riley")
+        self.assertFalse(me.json()["is_staff"])
+        get_user_model().objects.filter(username="riley").update(is_staff=True)
+        me = self.client.get("/api/me/", HTTP_AUTHORIZATION="Bearer " + r.json()["token"])
+        self.assertTrue(me.json()["is_staff"])
 
     def test_register_validation(self):
         ok = {"username": "sam", "email": "sam@example.com", "password": "Str0ng-pass-92", "password2": "Str0ng-pass-92", "accepted_terms": True}
         for change in ({"email": ""}, {"email": "not-an-email"}, {"password2": "different"}, {"accepted_terms": False}, {"accepted_terms": "true"},
-                       {"password": "123", "password2": "123"}, {"username": "a b"}):
+                       {"password": "123", "password2": "123"}, {"username": "a b"}, {"username": "éclair"}):
             self.assertEqual(self.post("/api/auth/register/", {**ok, **change}, {}).status_code, 400, change)
+
+    def test_registration_initializes_empty_account_and_rejects_duplicate_email(self):
+        body = {"username": "sam", "email": " Sam@example.com ", "password": "Str0ng-pass-92", "password2": "Str0ng-pass-92", "accepted_terms": True}
+        response = self.post("/api/auth/register/", body, {})
+        self.assertEqual(response.status_code, 201)
+        user = get_user_model().objects.get(username="sam")
+        self.assertTrue(m.UserSettings.objects.filter(owner=user).exists())
+        self.assertFalse(m.Product.objects.filter(owner=user).exists())
+        self.assertFalse(m.StockBatch.objects.filter(owner=user).exists())
+        self.assertEqual(self.post("/api/auth/register/", {**body, "username": "another", "email": "SAM@example.com"}, {}).status_code, 409)
+        self.assertEqual(get_user_model().objects.filter(email="sam@example.com").count(), 1)
+
+    def test_registration_rolls_back_all_records_when_initialization_fails(self):
+        with patch("api.services.initialize_business_data", side_effect=RuntimeError("setup failed")):
+            with self.assertRaisesRegex(RuntimeError, "setup failed"):
+                svc.register("sam", "sam@example.com", "Str0ng-pass-92", "Str0ng-pass-92", True)
+        self.assertFalse(get_user_model().objects.filter(username="sam").exists())
+        self.assertFalse(m.UserSettings.objects.filter(owner__username="sam").exists())
+        self.assertFalse(m.TermsAcceptance.objects.filter(user__username="sam").exists())
+        self.assertFalse(m.ApiToken.objects.filter(user__username="sam").exists())
+
+    def test_registration_rolls_back_when_token_creation_fails(self):
+        with patch("api.services.issue_token", side_effect=RuntimeError("token failed")):
+            with self.assertRaisesRegex(RuntimeError, "token failed"):
+                svc.register("sam", "sam@example.com", "Str0ng-pass-92", "Str0ng-pass-92", True)
+        self.assertFalse(get_user_model().objects.filter(username="sam").exists())
+        self.assertFalse(m.UserSettings.objects.filter(owner__username="sam").exists())
+        self.assertFalse(m.TermsAcceptance.objects.filter(user__username="sam").exists())
+
+    def test_database_enforces_account_identity_uniqueness(self):
+        User = get_user_model()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            User.objects.create(username="another", email=" A@X.COM ")
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            User.objects.create(username="A@X.COM", email="unique@example.com")
+
+    def test_magic_link_signs_into_existing_email_account(self):
+        body = {"username": "sam", "email": "sam@example.com", "password": "Str0ng-pass-92", "password2": "Str0ng-pass-92", "accepted_terms": True}
+        registration = self.post("/api/auth/register/", body, {}).json()
+        owner_headers = {"HTTP_AUTHORIZATION": "Bearer " + registration["token"]}
+        self.post("/api/products/", {"name": "Private stock", "price": "10", "cost": "5"}, owner_headers)
+        self.assertEqual(self.post("/api/auth/request-link/", {"email": "SAM@example.com"}, {}).status_code, 200)
+        token = re.search(r"token=([\w-]+)", mail.outbox[-1].body).group(1)
+        response = self.post("/api/auth/verify/", {"token": token}, {})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["user"]["id"], registration["user"]["id"])
+        headers = {"HTTP_AUTHORIZATION": "Bearer " + response.json()["token"]}
+        self.assertEqual(self.client.get("/api/products/", **headers).json()[0]["name"], "Private stock")
+        self.assertEqual(get_user_model().objects.filter(email="sam@example.com").count(), 1)
+        self.assertEqual(self.client.get("/api/products/", **self.other_h).json(), [])
+
+    def test_magic_link_does_not_use_another_users_matching_username(self):
+        User = get_user_model()
+        unrelated = User.objects.create(username="new@example.com", email="different@example.com")
+        self.post("/api/auth/request-link/", {"email": "new@example.com"}, {})
+        token = re.search(r"token=([\w-]+)", mail.outbox[-1].body).group(1)
+        response = self.post("/api/auth/verify/", {"token": token}, {})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(response.json()["user"]["id"], unrelated.id)
+        self.assertTrue(m.UserSettings.objects.filter(owner_id=response.json()["user"]["id"]).exists())
+
+    def test_magic_link_initialization_failure_does_not_consume_link(self):
+        self.post("/api/auth/request-link/", {"email": "new@example.com"}, {})
+        token = re.search(r"token=([\w-]+)", mail.outbox[-1].body).group(1)
+        with patch("api.services.initialize_business_data", side_effect=RuntimeError("setup failed")):
+            with self.assertRaisesRegex(RuntimeError, "setup failed"):
+                svc.verify_magic_link(token)
+        self.assertFalse(get_user_model().objects.filter(email="new@example.com").exists())
+        self.assertIsNone(m.MagicLink.objects.get(email="new@example.com").used_at)
+        self.assertEqual(self.post("/api/auth/verify/", {"token": token}, {}).status_code, 200)
 
     def test_login_wrong_password_and_lockout(self):
         get_user_model().objects.create_user(username="lee", password="Str0ng-pass-92")
@@ -262,6 +336,7 @@ class ApiTests(TestCase):
 
     def test_dashboard_totals(self):
         self.post("/api/sales/", {"customer": "A", "amount": "100"})
+        m.Sale.objects.create(owner=self.user, amount=Decimal("50"), cogs=Decimal("30"), status=m.Sale.PENDING)
         self.post("/api/expenses/", {"category": "Rent", "amount": "30"})
         d = self.client.get("/api/dashboard/", **self.h).json()
         self.assertEqual(Decimal(d["revenue"]), 100)
@@ -447,6 +522,64 @@ class ApiTests(TestCase):
         r = self.client.options("/api/sales/", HTTP_ORIGIN="http://evil.test", HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST")
         self.assertNotIn("Access-Control-Allow-Origin", r)
 
+    @override_settings(CORS_ALLOW_LOCAL_DEV=True)
+    def test_cors_allows_any_localhost_port_in_development(self):
+        for origin in ("http://localhost:5173", "http://127.0.0.1:3000", "http://localhost"):
+            r = self.client.options("/api/sales/", HTTP_ORIGIN=origin, HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST")
+            self.assertEqual(r["Access-Control-Allow-Origin"], origin)
+        for origin in ("http://localhost.evil.test", "http://evil.test:5500", "https://localhost:abc"):
+            r = self.client.options("/api/sales/", HTTP_ORIGIN=origin, HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST")
+            self.assertNotIn("Access-Control-Allow-Origin", r)
+
+    @override_settings(CORS_ALLOW_LOCAL_DEV=False)
+    def test_cors_rejects_unlisted_localhost_ports_in_production(self):
+        r = self.client.options("/api/sales/", HTTP_ORIGIN="http://localhost:5173", HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST")
+        self.assertNotIn("Access-Control-Allow-Origin", r)
+
+    @override_settings(CORS_ALLOW_LOCAL_DEV=False, CORS_ALLOWED_ORIGINS=["https://localhost", "capacitor://localhost"])
+    def test_mobile_origins_are_allowed_only_when_configured(self):
+        for origin in ("https://localhost", "capacitor://localhost"):
+            r = self.client.options("/api/sales/", HTTP_ORIGIN=origin, HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST")
+            self.assertEqual(r["Access-Control-Allow-Origin"], origin)
+            self.assertIn("Authorization", r["Access-Control-Allow-Headers"])
+        r = self.client.options("/api/sales/", HTTP_ORIGIN="https://other.example", HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST")
+        self.assertNotIn("Access-Control-Allow-Origin", r)
+
+    def test_frontend_is_served_by_django_in_development(self):
+        for url in ("/", "/Nexa.html"):
+            r = self.client.get(url)
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r["Content-Type"], "text/html; charset=utf-8")
+            html = r.content.decode()
+            self.assertIn("<title>Nexa", html)
+            self.assertIn('window.NEXA_API = location.origin + "/api";', html)
+            self.assertIn('href="Nexa.css"', html)
+            self.assertIn('src="Nexa.js"', html)
+
+    def test_frontend_assets_are_served_by_django(self):
+        for path, content_type, marker in (
+            ("/Nexa.css", "text/css; charset=utf-8", b"--bg:"),
+            ("/Nexa.js", "application/javascript; charset=utf-8", b"ReactDOM.createRoot"),
+        ):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response["Content-Type"], content_type)
+            self.assertEqual(response["Cache-Control"], "no-cache")
+            self.assertIn(marker, b"".join(response.streaming_content))
+            response.close()
+        self.assertEqual(self.client.get("/Nexa.jsx").status_code, 404)
+
+    @override_settings(ADMIN_LOCAL_ONLY=True)
+    def test_admin_is_hidden_from_tunnelled_requests_when_local_only(self):
+        self.assertEqual(self.client.get("/admin/login/").status_code, 200)
+        for header in ("HTTP_CF_CONNECTING_IP", "HTTP_X_FORWARDED_FOR"):
+            self.assertEqual(self.client.get("/admin/login/", **{header: "203.0.113.9"}).status_code, 404)
+        self.assertEqual(self.client.get("/api/me/", HTTP_CF_CONNECTING_IP="203.0.113.9").status_code, 401)
+
+    @override_settings(ADMIN_LOCAL_ONLY=False)
+    def test_admin_is_reachable_through_a_proxy_when_not_local_only(self):
+        self.assertEqual(self.client.get("/admin/login/", HTTP_X_FORWARDED_FOR="203.0.113.9").status_code, 200)
+
     def test_assistant_requires_authentication_and_valid_question(self):
         unauthenticated = self.client.post(
             "/api/assistant/chat/", {"question": "How am I doing?"}, content_type="application/json"
@@ -555,7 +688,8 @@ class ApiTests(TestCase):
 
     def test_algorithm_analyses_handle_empty_periods_without_division_errors(self):
         month = timezone.localdate().strftime("%Y-%m")
-        for analysis in ("profitability", "sales_trends", "expense_analysis", "product_rankings", "stock_cover"):
+        for analysis in ("profitability", "sales_trends", "expense_analysis", "product_rankings", "stock_cover",
+                         "reorder_planning", "aging_inventory", "break_even", "customer_concentration", "cash_indicators"):
             response = self.post("/api/assistant/analyze/", {"analysis": analysis, "month": month})
             self.assertEqual(response.status_code, 200, analysis)
         profitability = self.post(
@@ -563,6 +697,65 @@ class ApiTests(TestCase):
         ).json()
         self.assertIsNone(profitability["metrics"][3]["value"])
         self.assertIsNone(profitability["metrics"][6]["value"])
+
+    @patch("api.algorithms.timezone.localdate", return_value=date(2026, 11, 10))
+    def test_new_analyses_calculate_values_and_preserve_owner_isolation(self, today):
+        product = m.Product.objects.create(owner=self.user, name="Widget", price="20", cost="5")
+        foreign = m.Product.objects.create(owner=self.other, name="Other stock", price="20", cost="5")
+        m.StockBatch.objects.create(owner=self.user, product=product, quantity_received=10, quantity_left=10, unit_cost="5", received_on=date(2026, 9, 25))
+        m.StockBatch.objects.create(owner=self.user, product=product, quantity_received=3, quantity_left=3, unit_cost="8", received_on=date(2026, 9, 26))
+        m.StockBatch.objects.create(owner=self.other, product=foreign, quantity_received=100, quantity_left=100, unit_cost="20", received_on=date(2026, 1, 1))
+        m.Purchase.objects.create(owner=self.user, product=product, quantity=5, unit_cost="5")
+        customer = m.Customer.objects.create(owner=self.user, name="Alice")
+        m.Sale.objects.create(owner=self.user, customer=customer, product=product, quantity=10, amount="200", cogs="80", date=date(2026, 11, 1))
+        m.Sale.objects.create(owner=self.user, product=product, quantity=10, amount="100", cogs="40", status=m.Sale.PENDING, date=date(2026, 11, 2))
+        m.Sale.objects.create(owner=self.user, amount="100", cogs="60", date=date(2026, 11, 3))
+        m.Sale.objects.create(owner=self.other, amount="9000", cogs="100", date=date(2026, 11, 1))
+        m.Expense.objects.create(owner=self.user, amount="80", date=date(2026, 11, 2))
+        m.Expense.objects.create(owner=self.other, amount="9999", date=date(2026, 11, 2))
+
+        def report(name):
+            response = self.post("/api/assistant/analyze/", {"analysis": name, "month": "2026-11"})
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertNotIn("Other stock", str(response.json()))
+            return response.json()
+
+        reorder = report("reorder_planning")["reorders"][0]
+        self.assertEqual((reorder["stock"], reorder["incoming"], reorder["units_sold"]), (13, 5, 20))
+        self.assertEqual((reorder["reorder_point"], reorder["suggested_quantity"]), (42, 56))
+        inventory = report("aging_inventory")
+        self.assertEqual([x["value"] for x in inventory["metrics"]], ["74.00", "50.00", "10"])
+        self.assertEqual(inventory["inventory"][0]["aged_units"], 10)
+        breakeven = report("break_even")
+        self.assertEqual([x["value"] for x in breakeven["metrics"]], ["300.00", "53.3", "80.00", "150.00"])
+        concentration = report("customer_concentration")
+        self.assertEqual([x["value"] for x in concentration["metrics"]], ["300.00", "66.7", "66.7", "100.00"])
+        self.assertEqual(concentration["customer_rows"][0]["customer"], "Alice")
+        cash = report("cash_indicators")
+        self.assertEqual([x["value"] for x in cash["metrics"]], ["300.00", "80.00", "220.00", "100.00"])
+
+    @patch("api.algorithms.timezone.localdate", return_value=date(2026, 11, 10))
+    def test_reorder_future_no_demand_and_orders_cover_threshold(self, today):
+        product = m.Product.objects.create(owner=self.user, name="Widget", price="20", cost="5")
+        m.Sale.objects.create(owner=self.user, product=product, quantity=10, amount="100", date=date(2026, 11, 1))
+        m.Sale.objects.create(owner=self.user, product=product, quantity=900, amount="100", date=date(2026, 11, 20))
+        m.Purchase.objects.create(owner=self.user, product=product, quantity=21, unit_cost="5")
+        future = self.post("/api/assistant/analyze/", {"analysis": "reorder_planning", "month": "2026-12"}).json()
+        self.assertIsNone(future["reorders"][0]["reorder_point"])
+        self.assertEqual(future["reorders"][0]["status"], "No demand data")
+        current = self.post("/api/assistant/analyze/", {"analysis": "reorder_planning", "month": "2026-11"}).json()
+        self.assertEqual(current["reorders"][0]["units_sold"], 10)
+        self.assertEqual(current["reorders"][0]["suggested_quantity"], 16)
+        m.Purchase.objects.create(owner=self.user, product=product, quantity=1, unit_cost="5")
+        current = self.post("/api/assistant/analyze/", {"analysis": "reorder_planning", "month": "2026-11"}).json()
+        self.assertEqual(current["reorders"][0]["suggested_quantity"], 0)
+
+    def test_break_even_unavailable_when_margin_not_positive(self):
+        today = timezone.localdate()
+        m.Sale.objects.create(owner=self.user, amount="100", cogs="120", date=today)
+        response = self.post("/api/assistant/analyze/", {"analysis": "break_even", "month": today.strftime("%Y-%m")})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["metrics"][3]["value"])
 
     def test_expense_analysis_reports_unchanged_categories_without_false_direction(self):
         today = timezone.localdate()
@@ -601,6 +794,10 @@ class ApiTests(TestCase):
             owner=self.other, product=foreign_product, date=today, amount="500", cogs="200", quantity=10
         )
         m.Expense.objects.create(owner=self.user, date=today, category="Rent", amount="30")
+        m.Sale.objects.create(
+            owner=self.user, product_id=product_a["id"], date=today, amount="300", cogs="150", quantity=3,
+            status=m.Sale.PENDING,
+        )
         m.Expense.objects.create(owner=self.user, date=today, category="Transport", amount="10")
         request = {"month": today.strftime("%Y-%m")}
 
@@ -631,6 +828,8 @@ class ApiTests(TestCase):
         ).json()
         self.assertEqual(products["products"][0]["product"], "Alpha")
         self.assertEqual(products["products"][0]["gross_profit"], "60.00")
+        self.assertEqual(products["products"][0]["revenue"], "120.00")
+        self.assertEqual(products["products"][0]["units"], 2)
         self.assertNotIn("Foreign product", str(products))
         self.assertNotIn("500.00", str(products))
 
@@ -791,12 +990,13 @@ class ApiTests(TestCase):
                     total = sum(Decimal(b["amount"]) for b in series["buckets"])
                 else:
                     total = Decimal(series["buckets"][series["current"]]["amount"])
-                self.assertEqual(total, Decimal("420"))
+                self.assertEqual(total, Decimal("300"))
                 self.assertEqual(total, Decimal(progress["revenue"]))
 
-    def test_goal_series_counts_every_sale_in_the_period(self):
+    def test_goal_series_counts_every_paid_sale_in_the_period(self):
         today = timezone.localdate()
         m.Sale.objects.bulk_create([m.Sale(owner=self.user, amount=Decimal("1"), date=today) for _ in range(501)])
+        m.Sale.objects.create(owner=self.user, amount=Decimal("50"), date=today, status=m.Sale.PENDING)
         self.client.patch("/api/settings/", json.dumps({"revenue_goal": "1000", "goal_period": "day"}),
                           content_type="application/json", **self.h)
         series = self.client.get("/api/settings/series/", **self.h).json()

@@ -34,13 +34,14 @@ cd backend
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python manage.py migrate
-python manage.py createcachetable
 python manage.py seed_demo you@email.com   # optional: sample data for this account
-python manage.py runserver 127.0.0.1:8000
+cd ..
+.\dev.ps1
 ```
 
-Leave the server running. Then open `frontend/Nexa.html` in a browser. The page connects to `http://localhost:8000/api` when opened locally, and to `https://api.Nexa-app.com/api` otherwise. You can change this by setting `window.NEXA_API` before the app script loads.
+`dev.ps1` stops any old Nexa server on port 8000, runs `migrate` and `createcachetable`, and starts the server. Django also serves the frontend in development, so open <http://localhost:8000/>. The admin is at <http://localhost:8000/admin/>; create an admin account once with `python manage.py createsuperuser` from `backend`.
+
+The page and the API share one origin, so no CORS setup is involved. If you open `frontend/Nexa.html` another way (from a file or another local server), it connects to port 8000 of the same host, and to `https://api.Nexa-app.com/api` when the host is not local. You can change this by setting `window.NEXA_API` before the app script loads.
 
 The development settings are not for production. Debug mode is on by default. See [Configuration](#configuration).
 
@@ -89,7 +90,7 @@ The sidebar has these pages:
 | Page | What it is for | Backed by the API today? |
 |---|---|---|
 | Overview | Dashboard figures for the month: KPIs, weekly sales, top products, and forecast | **Yes**: the KPIs, weekly sales, top products, and forecast load from `dashboard/?month=`. Expenses, sales, and reports come from `expenses/`, `sales/`, and `reports/`. These load when the page opens and again after each sale or expense. The Revenue ring and caption use the saved revenue goal from `settings/`. When a revenue goal is set, the sales chart loads its buckets from `settings/series/` and changes shape with the goal period, with a dashed target marker. A day goal shows each day of the current month, with the goal as the target. A week goal shows the last 8 Monday-to-Sunday weeks, with the goal as the target. A month goal shows the last 6 calendar months, with the goal as the target. A year goal shows the 12 months of the current year, with the goal divided by 12 as the monthly target. Future periods show the target marker with no bar. Bars can rise above the target marker. With no goal, the chart shows the last four weeks and a next-week forecast bar. The low-stock warning uses the loaded stock. |
-| Settings | Light or dark theme (local only), and a revenue goal for a day, week, month, or year. Progress counts every sale in the period, paid and pending, and shows the amount left and the period dates. The goal also sets the target and the period shown on the Overview sales chart (see Overview). | **Yes** for the revenue goal: it loads from `settings/` and `settings/series/` when the page opens, saves with `PATCH /api/settings/`, and then reloads both. The theme is local only. |
+| Settings | Light or dark theme (local only), and a revenue goal for a day, week, month, or year. Progress counts only Paid sales in the period, and shows the amount left and the period dates. The goal also sets the target and the period shown on the Overview sales chart (see Overview). | **Yes** for the revenue goal: it loads from `settings/` and `settings/series/` when the page opens, saves with `PATCH /api/settings/`, and then reloads both. The theme is local only. |
 | Sales | Record a sale: customer, amount, Paid or Pending status, and an optional product with quantity. A product sale takes that quantity from stock straight away, oldest batch first. Out-of-stock products cannot be chosen. | **Yes**: records are saved with `POST /api/sales/`. The list is not reloaded from the API. |
 | Products | Products, prices, costs, and target stock | Partly. The list loads from `products/` when the page opens. Suppliers are not loaded from `suppliers/`, and the page has no create or edit form. |
 | Stock | Stock level per product, reorders, and low-stock warnings | **Yes**: products, batches, and purchases load from `products/`, `batches/`, and `purchases/` when the page opens. Reorder saves a purchase with `POST /api/purchases/`. |
@@ -117,7 +118,7 @@ These rules apply to the API. They define how the figures are calculated.
 
 ### Sales and cost of goods
 
-- **Revenue** is the sum of sale amounts dated within the month. It includes both Paid and Pending sales, so Pending sales count toward revenue, gross profit, and net profit.
+- **Revenue** is the sum of Paid sale amounts dated within the month. Pending sales are not counted in revenue, COGS, gross profit, or net profit until they are marked Paid.
 - **Cost of goods (COGS)** is stored on each sale when it is recorded:
   - A sale linked to a product takes stock from the **oldest batch first** (FIFO). The cost is the real batch cost.
   - An unlinked sale uses an estimate: **60% of the sale amount** (`COGS_ESTIMATE_RATIO`).
@@ -132,7 +133,7 @@ These rules apply to the API. They define how the figures are calculated.
 
 Monthly summaries also include **weekly sales** and **top products**:
 
-- **Weekly sales** are four buckets: days 1–7, 8–14, 15–21, and 22 to the end of the month. The last bucket is longer in months with more than 28 days.
+- **Weekly sales** are four buckets: days 1–7, 8–14, 15–21, and 22 to the end of the month. The last bucket is longer in months with more than 28 days. They count every sale, paid and pending, so they show sales activity rather than revenue.
 - **Top products** are ranked by units sold, using linked sales only, with a maximum of five.
 
 ### Forecast
@@ -187,8 +188,13 @@ Request: `POST /api/assistant/analyze/` with `{"analysis": "<name>", "month": "Y
 | `profitability` | Revenue, gross profit (revenue − COGS), net profit (gross profit − expenses), gross margin %, net margin %, expense ratio %, and revenue growth % against the previous month. |
 | `sales_trends` | Revenue for the six calendar months ending in the selected month, with a 3-month moving average. The first months use shorter windows. |
 | `expense_analysis` | Expense totals by category, compared with the previous month. Each category includes its change % and its share of total expenses. |
-| `product_rankings` | Top 10 products by revenue, then by name, using linked sales only (Paid and Pending). Gross profit = revenue − batch COGS. |
+| `product_rankings` | Top 10 products by revenue, then by name, using linked Paid sales only. Gross profit = revenue − batch COGS. |
 | `stock_cover` | For each product: stock on hand, units sold in the month, daily sales rate, days of cover, status, and the quantity to order. Status is "Out of stock" at zero stock, "No sales this period" without sales, "Reorder now" under 14 days of cover, "Watch" under 30 days, and "Healthy" otherwise. Reorder quantity = 30 days of sales − stock on hand. |
+| `reorder_planning` | Uses elapsed selected-month product sales (paid and pending, since both consume stock) to estimate daily demand. The assumed lead time is 14 days and safety buffer is 7 days: reorder point = ceiling(rate × 21). If current stock plus outstanding orders is at or below that point, suggested order = max(0, ceiling(rate × 37) − stock − outstanding orders). Without observed demand no quantity is estimated. Stock and orders are current, not historical snapshots; review lead time and orders before purchasing. |
+| `aging_inventory` | Values currently remaining stock using batch cost; batches received more than 45 days ago are flagged as aged. This is a current snapshot regardless of selected month, and age alone does not establish that stock is unsellable. |
+| `break_even` | Estimated sales needed to cover recorded expenses = expenses ÷ observed gross margin for paid sales in the selected month. A positive gross margin is required. Treats all expenses as fixed and assumes unchanged sales mix and costs; unlinked sales use estimated COGS. |
+| `customer_concentration` | Top identified customers by paid revenue and their share of all paid revenue. Walk-in and unassigned sales are counted as unidentified, so concentration can be understated. |
+| `cash_indicators` | Selected-month paid sales, recorded expenses and their difference, plus all currently pending sales. Sale dates are not payment dates; the difference excludes inventory purchases and other cash movements, so it is not a cash balance or net profit. |
 
 Formulas for `profitability`:
 
@@ -229,7 +235,10 @@ Nexa-app/
 ├── docs/
 │   └── APP_DOCUMENTATION.md      This document
 ├── frontend/
-│   └── Nexa.html                 Single-file React UI (React 18 and in-browser Babel from a CDN)
+│   ├── Nexa.html                 Page markup and React CDN scripts
+│   ├── Nexa.css                  Frontend styles
+│   ├── Nexa.jsx                  Editable React application source
+│   └── Nexa.js                   Generated browser-ready application script
 └── backend/
     ├── manage.py
     ├── requirements.txt          Django only
@@ -249,9 +258,13 @@ Nexa-app/
             └── seed_demo.py      Sample data command
 ```
 
+After editing `frontend/Nexa.jsx`, run `npm ci` and `npm run build:frontend` from the
+repository root, and commit the regenerated `frontend/Nexa.js`. The HTML, CSS and generated
+JavaScript must be deployed together; HTML and CSS changes do not need a build.
+
 `backend/venv/` is the local Python environment and is not part of the application. Do not commit it.
 
-The browser loads React and Babel from a CDN, so the page needs internet access to load them.
+The browser loads React from a CDN, so the page needs internet access to load it.
 
 ---
 
@@ -286,7 +299,7 @@ All paths are under `/api/`. Requests and responses use JSON.
 | 3 | POST | `auth/request-link/` | Public | `{email}` | Send a sign-in link. Same response for any valid address. |
 | 4 | POST | `auth/verify/` | Public | `{token}` | Exchange a link token for an API token. Returns `{token, user: {id, email}}`. |
 | 5 | POST | `auth/logout/` | Yes | none | Revoke the current token. |
-| 6 | GET | `me/` | Yes | none | Current user: `{id, username, email}`. |
+| 6 | GET | `me/` | Yes | none | Current user: `{id, username, email, is_staff}`. The dashboard shows an **Admin** button, a link to the Django admin, only when `is_staff` is true. |
 | 7 | GET, POST | `products/` | Yes | GET: `?q=`. POST: `{name, price, cost, category, target_stock, supplier}` | List or create products. |
 | 8 | GET, PATCH | `products/<id>/` | Yes | PATCH: fields to change, including `image` | Read or update a product. `image` is a data URL (`data:image/png;base64,...`), or `""` to remove the photo. Accepts PNG, JPEG, WebP, or GIF up to 1 MB. The response carries `image_url` instead of the image data. |
 | 9 | GET, POST | `suppliers/` | Yes | POST: supplier fields | List or create suppliers. |
@@ -303,9 +316,9 @@ All paths are under `/api/`. Requests and responses use JSON.
 | 20 | GET | `reports/` | Yes | none | Results month by month. |
 | 21 | GET | `insights/` | Yes | none | Recommendations (see [Recommendations](#recommendations-insights)). |
 | 22 | POST | `assistant/chat/` | Yes | `{question, month?}` | Ask the AI engine. |
-| 23 | POST | `assistant/analyze/` | Yes | `{analysis, month?}` | Run an Algorithm analysis: `profitability`, `sales_trends`, `expense_analysis`, `product_rankings`, or `stock_cover`. |
+| 23 | POST | `assistant/analyze/` | Yes | `{analysis, month?}` | Run an algorithm analysis listed in [Algorithm analyses](#algorithm-analyses). |
 | 24 | GET, PATCH | `settings/` | Yes | PATCH: `{revenue_goal?, goal_period?}` | Read or update the revenue goal. `goal_period` is `day`, `week`, `month`, or `year` (default `month`). A `revenue_goal` of `null` or `""` clears the goal. GET and PATCH return `{revenue_goal, goal_period, progress}`. `progress` is `null` when no goal is set; otherwise it holds `period`, `start`, `end`, `revenue`, `goal`, `percent`, and `remaining` for the current period. Weeks run Monday to Sunday, and years run January 1 to December 31. |
-| 25 | GET | `settings/series/` | Yes | none | Chart buckets for the saved revenue goal period, used by the Overview sales chart. Returns `null` when no goal is set. Otherwise returns `{period, target, current, buckets}`. `target` is the goal (a twelfth of it for `year`), `current` is the index of the current bucket, and each bucket has `start`, `end`, and `amount`. Buckets count every sale in the period, paid and pending, with no row limit: each day of the current month, the last 8 Monday-to-Sunday weeks, the last 6 months, or the 12 months of the current year. |
+| 25 | GET | `settings/series/` | Yes | none | Chart buckets for the saved revenue goal period, used by the Overview sales chart. Returns `null` when no goal is set. Otherwise returns `{period, target, current, buckets}`. `target` is the goal (a twelfth of it for `year`), `current` is the index of the current bucket, and each bucket has `start`, `end`, and `amount`. Buckets count only Paid sales in the period, with no row limit: each day of the current month, the last 8 Monday-to-Sunday weeks, the last 6 months, or the 12 months of the current year. |
 | 26 | GET | `images/<key>/` | Public | `?size=120`, `400`, or `1000` (default `400`) | Serve a product photo as WebP. Use the `image_url` from a product response. The size is the smallest variant at least as large as the request, capped at 1000. The key is random and unguessable. This route is public because `<img>` tags cannot send the token. Responses include `ETag` and `Cache-Control: public, max-age=86400`, and return 304 when the client's copy is current. |
 
 Paging: `products/`, `sales/`, `expenses/`, `batches/`, and `purchases/` accept `?limit=` and `?offset=`. Responses carry an `X-Total-Count` header with the full count. Without `limit`, `products/`, `batches/`, and `purchases/` return every row, and `sales/` and `expenses/` return at most 500. `limit` is capped at 500. JSON responses are gzip-compressed when the client sends `Accept-Encoding: gzip`. Unexpected server errors return `{"error": ...}` with status 500 and are logged. They are not HTML pages.
@@ -380,8 +393,12 @@ Set these environment variables before starting the server. The defaults are for
 | `NEXA_DEBUG` | `1` | Debug mode. Set to `0` for production. |
 | `NEXA_SECRET_KEY` | (none) | Required when `NEXA_DEBUG` is `0`. |
 | `NEXA_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Hosts the server accepts. |
-| `NEXA_CORS_ORIGINS` | `null` (for `file://`), `localhost:5500`, `127.0.0.1:5500`, `localhost:8080` | Origins allowed to call the API. |
-| `NEXA_FRONTEND_URL` | `http://localhost:5500/Nexa.html` | Base of the links in sign-in emails. |
+| `NEXA_CORS_ORIGINS` | `null` (for `file://`), `localhost:5500`, `127.0.0.1:5500`, `localhost:8080` | Origins allowed to call the API. Production lists its exact frontend origin here. |
+| `NEXA_CORS_ALLOW_LOCAL_DEV` | `1` when `NEXA_DEBUG` is `1`, otherwise `0` | Also allows any `localhost` or `127.0.0.1` port, so changing the dev server port never breaks the connection. |
+| `NEXA_SERVE_FRONTEND` | `1` when `NEXA_DEBUG` is `1`, otherwise `0` | Serves `frontend/Nexa.html` at `/` and `/Nexa.html`, so the app and API share one origin. |
+| `NEXA_FRONTEND_URL` | `http://localhost:8000/Nexa.html` | Base of the links in sign-in emails. |
+| `NEXA_CSRF_TRUSTED_ORIGINS` | (none) | Comma-separated HTTPS origins that may submit Django forms (the admin) behind a TLS-terminating tunnel or proxy. `.\dev.ps1 -Share` sets `https://*.trycloudflare.com`. |
+| `NEXA_ADMIN_LOCAL_ONLY` | `0` | When `1`, `/admin/` answers 404 to requests relayed by a tunnel or proxy (they carry `Cf-Connecting-Ip` or `X-Forwarded-*` headers), so the admin works only from this machine. `.\dev.ps1 -Share` sets it. |
 | `NEXA_DATABASE_URL` | unset (uses `backend/db.sqlite3`) | PostgreSQL connection URL for production. |
 | `NEXA_MEDIA_ROOT` | `backend/media/` | Folder for product photos. Use a persistent disk in production. |
 | `NEXA_EMAIL_BACKEND` | console | Where emails go. In development, links print to the console. |

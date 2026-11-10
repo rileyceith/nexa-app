@@ -1,5 +1,5 @@
 from calendar import month_abbr
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from math import ceil
 
@@ -15,6 +15,11 @@ ANALYSES = {
     "expense_analysis": "Expense analysis",
     "product_rankings": "Product rankings",
     "stock_cover": "Stock cover",
+    "reorder_planning": "Reorder planning",
+    "aging_inventory": "Aging inventory",
+    "break_even": "Break-even estimate",
+    "customer_concentration": "Customer concentration",
+    "cash_indicators": "Cash-flow indicators",
 }
 
 # Assumed supplier lead time: reorder when cover drops below this many days.
@@ -76,7 +81,7 @@ def _sales_trends(owner, year, month):
     month_starts.reverse()
     totals = {
         (row["date__year"], row["date__month"]): row["total"] or Decimal(0)
-        for row in m.Sale.objects.filter(owner=owner, date__range=(month_starts[0], end))
+        for row in m.Sale.objects.filter(owner=owner, status=m.Sale.PAID, date__range=(month_starts[0], end))
         .values("date__year", "date__month")
         .annotate(total=Sum("amount"))
     }
@@ -176,7 +181,7 @@ def _expense_analysis(owner, year, month):
 def _product_rankings(owner, year, month):
     start, end = month_bounds(year, month)
     rows = (
-        m.Sale.objects.filter(owner=owner, product__isnull=False, date__range=(start, end))
+        m.Sale.objects.filter(owner=owner, status=m.Sale.PAID, product__isnull=False, date__range=(start, end))
         .values("product__name")
         .annotate(revenue=Sum("amount"), units=Sum("quantity"), cogs=Sum("cogs"))
         .order_by("-revenue", "product__name")
@@ -272,6 +277,153 @@ def _stock_cover(owner, year, month):
     }
 
 
+def _reorder_planning(owner, year, month):
+    start, end = month_bounds(year, month)
+    today = timezone.localdate()
+    elapsed_end = min(end, today)
+    days = max(0, (elapsed_end - start).days + 1)
+    sales = m.Sale.objects.filter(owner=owner, product__owner=owner, date__range=(start, elapsed_end))
+    sold = dict(sales.values_list("product_id").annotate(total=Sum("quantity")))
+    batches = m.StockBatch.objects.filter(owner=owner, product__owner=owner)
+    on_hand = dict(batches.values_list("product_id").annotate(total=Sum("quantity_left")))
+    orders = m.Purchase.objects.filter(owner=owner, product__owner=owner, status=m.Purchase.ORDERED)
+    incoming = dict(orders.values_list("product_id").annotate(total=Sum("quantity")))
+    rows = []
+    for product in m.Product.objects.filter(owner=owner).order_by("name", "id"):
+        stock = on_hand.get(product.id, 0) or 0
+        ordered = incoming.get(product.id, 0) or 0
+        units = sold.get(product.id, 0) or 0
+        rate = Decimal(units) / days if days and units else None
+        point = ceil(rate * (STOCK_LEAD_DAYS + 7)) if rate else None
+        target = ceil(rate * (STOCK_TARGET_DAYS + 7)) if rate else None
+        quantity = max(0, target - stock - ordered) if target is not None and stock + ordered <= point else 0
+        status = "No demand data" if rate is None else "Order" if quantity else "Covered"
+        rows.append({
+            "product": product.name, "stock": stock, "incoming": ordered, "units_sold": units,
+            "reorder_point": point, "suggested_quantity": quantity, "status": status,
+        })
+    rows.sort(key=lambda r: (r["status"] != "Order", r["product"]))
+    return {
+        "period": f"{year}-{month:02d}", "title": ANALYSES["reorder_planning"],
+        "metrics": [
+            {"label": "Products to order", "value": str(sum(r["status"] == "Order" for r in rows)), "format": "count"},
+            {"label": "Without demand data", "value": str(sum(r["status"] == "No demand data" for r in rows)), "format": "count"},
+        ],
+        "reorders": rows,
+        "insights": [
+            f"Uses {days} elapsed day(s) of the selected month and current stock and outstanding orders, not historical stock.",
+            "Assumes 14-day lead time, 7-day safety buffer and 30-day target. Paid and pending product sales count as stock consumed; review estimates before ordering.",
+            "No demand data means a quantity cannot be estimated; incoming orders may arrive late.",
+        ],
+    }
+
+
+def _aging_inventory(owner, year, month):
+    today = timezone.localdate()
+    cutoff = today - timedelta(days=45)
+    groups = {}
+    batches = m.StockBatch.objects.filter(owner=owner, product__owner=owner, quantity_left__gt=0).select_related("product")
+    for batch in batches.iterator():
+        row = groups.setdefault(batch.product_id, {
+            "product": batch.product.name, "units": 0, "value": Decimal(0),
+            "aged_units": 0, "aged_value": Decimal(0),
+        })
+        value = batch.quantity_left * batch.unit_cost
+        row["units"] += batch.quantity_left
+        row["value"] += value
+        if batch.received_on < cutoff:
+            row["aged_units"] += batch.quantity_left
+            row["aged_value"] += value
+    total = sum((r["value"] for r in groups.values()), Decimal(0))
+    aged = sum((r["aged_value"] for r in groups.values()), Decimal(0))
+    rows = sorted(groups.values(), key=lambda r: (-r["aged_value"], r["product"]))
+    for row in rows:
+        row["value"] = _amount(row["value"])
+        row["aged_value"] = _amount(row["aged_value"])
+    return {
+        "period": f"{year}-{month:02d}", "title": ANALYSES["aging_inventory"],
+        "metrics": [
+            {"label": "Inventory at cost", "value": _amount(total), "format": "currency"},
+            {"label": "Aged stock at cost", "value": _amount(aged), "format": "currency"},
+            {"label": "Aged units", "value": str(sum(r["aged_units"] for r in rows)), "format": "count"},
+        ],
+        "inventory": rows,
+        "insights": [
+            f"Current stock as of {today.isoformat()}; this is not a historical snapshot of the selected month.",
+            "Aged means received more than 45 days ago and still on hand. Value uses each batch's recorded unit cost; age alone does not prove stock is unsellable.",
+        ],
+    }
+
+
+def _break_even(owner, year, month):
+    summary = month_summary(owner, year, month)
+    revenue, gross, expenses = summary["revenue"], summary["gross_profit"], summary["expenses"]
+    threshold = expenses * revenue / gross if revenue > 0 and gross > 0 else None
+    return {
+        "period": summary["month"], "title": ANALYSES["break_even"],
+        "metrics": [
+            {"label": "Paid revenue", "value": _amount(revenue), "format": "currency"},
+            {"label": "Gross margin", "value": _percent(gross, revenue), "format": "percent"},
+            {"label": "Recorded expenses", "value": _amount(expenses), "format": "currency"},
+            {"label": "Estimated break-even sales", "value": _amount(threshold) if threshold is not None else None, "format": "currency"},
+        ],
+        "insights": [
+            "Estimate = recorded expenses divided by the observed gross margin. Treats all recorded expenses as fixed and assumes the same sales mix and costs.",
+            "Unlinked sales use estimated cost of goods. This is not financial advice or a cash-flow forecast.",
+            "A positive paid revenue and gross profit are required for an estimate." if threshold is None
+            else "This estimate uses the selected month's recorded expenses and paid sales.",
+        ],
+    }
+
+
+def _customer_concentration(owner, year, month):
+    start, end = month_bounds(year, month)
+    sales = m.Sale.objects.filter(owner=owner, status=m.Sale.PAID, date__range=(start, end))
+    total = sales.aggregate(total=Sum("amount"))["total"] or Decimal(0)
+    groups = list(sales.filter(customer__owner=owner).exclude(customer__name__iexact="Walk-in")
+                  .values("customer_id", "customer__name").annotate(total=Sum("amount"))
+                  .order_by("-total", "customer__name", "customer_id"))
+    identified = sum((r["total"] for r in groups), Decimal(0))
+    rows = [{"customer": r["customer__name"], "revenue": _amount(r["total"]),
+             "share_pct": _percent(r["total"], total)} for r in groups[:10]]
+    top = sum((r["total"] for r in groups[:5]), Decimal(0))
+    return {
+        "period": f"{year}-{month:02d}", "title": ANALYSES["customer_concentration"],
+        "metrics": [
+            {"label": "Paid revenue", "value": _amount(total), "format": "currency"},
+            {"label": "Top customer share", "value": _percent(groups[0]["total"], total) if groups else None, "format": "percent"},
+            {"label": "Top 5 customer share", "value": _percent(top, total), "format": "percent"},
+            {"label": "Unidentified revenue", "value": _amount(total - identified), "format": "currency"},
+        ],
+        "customer_rows": rows,
+        "insights": [
+            "Shares use all paid revenue in the selected month, including unidentified sales.",
+            "Walk-in and unassigned sales are unidentified; concentration may be understated. Customer names are grouped by their recorded account entry.",
+        ],
+    }
+
+
+def _cash_indicators(owner, year, month):
+    start, end = month_bounds(year, month)
+    sales = m.Sale.objects.filter(owner=owner)
+    paid = sales.filter(status=m.Sale.PAID, date__range=(start, end)).aggregate(total=Sum("amount"))["total"] or Decimal(0)
+    expense = m.Expense.objects.filter(owner=owner, date__range=(start, end)).aggregate(total=Sum("amount"))["total"] or Decimal(0)
+    pending = sales.filter(status=m.Sale.PENDING).aggregate(total=Sum("amount"))["total"] or Decimal(0)
+    return {
+        "period": f"{year}-{month:02d}", "title": ANALYSES["cash_indicators"],
+        "metrics": [
+            {"label": "Paid sales", "value": _amount(paid), "format": "currency"},
+            {"label": "Recorded expenses", "value": _amount(expense), "format": "currency"},
+            {"label": "Sales less expenses", "value": _amount(paid - expense), "format": "currency"},
+            {"label": "All pending sales", "value": _amount(pending), "format": "currency"},
+        ],
+        "insights": [
+            "Paid sales and expenses use their recorded sale or expense dates in the selected month; payment dates are not tracked.",
+            "Pending sales include all currently pending sales, regardless of sale date. Sales less expenses excludes inventory purchases and other cash movements; it is not a cash balance or net profit.",
+        ],
+    }
+
+
 def analyze(owner, analysis, year, month):
     handlers = {
         "profitability": _profitability,
@@ -279,6 +431,11 @@ def analyze(owner, analysis, year, month):
         "expense_analysis": _expense_analysis,
         "product_rankings": _product_rankings,
         "stock_cover": _stock_cover,
+        "reorder_planning": _reorder_planning,
+        "aging_inventory": _aging_inventory,
+        "break_even": _break_even,
+        "customer_concentration": _customer_concentration,
+        "cash_indicators": _cash_indicators,
     }
     if analysis not in handlers:
         raise ValueError("Choose a supported algorithm analysis.")
