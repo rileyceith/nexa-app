@@ -1,22 +1,28 @@
+import csv
 import base64
+import io
 import json
 import logging
 from decimal import Decimal, InvalidOperation
 from functools import wraps
+from hashlib import sha256
+from zoneinfo import available_timezones
 
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from django.core.cache import cache
-from django.db import IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.db.models import Count, Max, QuerySet, Sum
-from django.http import FileResponse, Http404, HttpResponseNotModified, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotModified, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.http import require_GET
+from redis.exceptions import RedisError
 
-from . import algorithms
-from . import assistant as ai
+from .insights import algorithms
+from .insights import assistant as ai
 from . import images
 from . import models as m
 from . import services as svc
@@ -32,6 +38,29 @@ def ok(data, status=200):
 
 def fail(message, status=400):
     return JsonResponse({"error": message}, status=status)
+
+
+@require_GET
+def health_live(request):
+    response = ok({"status": "ok"})
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@require_GET
+def health_ready(request):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        cache.get("nexa:health-check")
+    except (DatabaseError, OSError, RedisError):
+        logger.exception("Readiness check failed")
+        response = fail("Service is not ready.", 503)
+    else:
+        response = ok({"status": "ready"})
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 MAX_PAGE_SIZE = 500
@@ -65,6 +94,7 @@ def api(*methods, auth=True, max_body=None):
             if request.method not in methods:
                 return fail("Method not allowed.", 405)
             request.owner = None
+            request.prefs = None
             if auth:
                 header = request.headers.get("Authorization", "")
                 user = svc.user_from_token(header[7:]) if header.startswith("Bearer ") else None
@@ -82,6 +112,11 @@ def api(*methods, auth=True, max_body=None):
                 except ValueError:
                     return fail("Body must be a JSON object.")
             try:
+                if request.owner:
+                    prefs, _ = m.UserSettings.objects.get_or_create(owner=request.owner)
+                    request.prefs = prefs
+                    with timezone.override(prefs.time_zone):
+                        return fn(request, *args, **kwargs)
                 return fn(request, *args, **kwargs)
             except svc.ServiceError as e:
                 return fail(e.message, e.status)
@@ -169,14 +204,14 @@ def image_data(data, key="image"):
 
 # ---------- serializers ----------
 
-def s_product(p):
+def s_product(p, low_stock_threshold=Decimal("0.350")):
     # List views annotate in_stock via svc.with_stock; a single product falls back to one query.
     left = p.in_stock if hasattr(p, "in_stock") else svc.stock_of(p)
     return {
         "id": p.id, "name": p.name, "category": p.category, "price": p.price, "cost": p.cost,
         "margin_pct": round((p.price - p.cost) / p.price * 100, 1) if p.price else 0,
         "target_stock": p.target_stock, "in_stock": left,
-        "low_stock": bool(p.target_stock) and left / p.target_stock < 0.35,
+        "low_stock": bool(p.target_stock) and left / p.target_stock < low_stock_threshold,
         "supplier": p.supplier.name if p.supplier else None,
         "image_url": reverse("product_image", args=[p.image_key]) if p.image_key else "",
     }
@@ -220,14 +255,43 @@ def request_link(request):
     return ok({"detail": "If that address is valid, a sign-in link is on its way."})
 
 
+@api("POST", auth=False, max_body=2048)
+def request_password_reset(request):
+    email = text(request.data, "email", maxlen=254).lower()
+    try:
+        validate_email(email)
+    except ValidationError:
+        return fail("Enter a valid email address.")
+    svc.request_password_reset(email, request.META.get("REMOTE_ADDR", ""))
+    response = ok({"detail": "If an account exists for that email, password reset instructions will be sent."})
+    response["Cache-Control"] = "no-store, private"
+    return response
+
+
+@api("POST", auth=False, max_body=4096)
+def reset_password(request):
+    data = request.data
+    token = text(data, "token", maxlen=200)
+    password = data.get("password") if isinstance(data.get("password"), str) else ""
+    password2 = data.get("password2") if isinstance(data.get("password2"), str) else None
+    svc.reset_password(token, password, password2)
+    response = ok({"detail": "Your password has been reset. Sign in with your new password."})
+    response["Cache-Control"] = "no-store, private"
+    return response
+
+
 @api("POST", auth=False)
 def verify_link(request):
     user, key = svc.verify_magic_link(text(request.data, "token", maxlen=200))
-    return ok({"token": key, "user": {"id": user.id, "email": user.email}})
+    response = ok({"token": key, "user": {"id": user.id, "email": user.email}})
+    response["Cache-Control"] = "no-store, private"
+    return response
 
 
 def _session(user, key, status=200):
-    return ok({"token": key, "user": {"id": user.id, "username": user.username}}, status)
+    response = ok({"token": key, "user": {"id": user.id, "username": user.username}}, status)
+    response["Cache-Control"] = "no-store, private"
+    return response
 
 
 @api("POST", auth=False)
@@ -270,7 +334,7 @@ def products(request):
         if q:
             qs = qs.filter(name__icontains=q)
         rows, total = page(request, svc.with_stock(qs).order_by("name", "id"))
-        return with_total(ok([s_product(p) for p in rows]), total)
+        return with_total(ok([s_product(p, request.prefs.low_stock_threshold) for p in rows]), total)
     name = text(request.data, "name")
     if not name:
         return fail("name is required.")
@@ -286,7 +350,7 @@ def products(request):
             )
     except IntegrityError:
         return fail("That product already exists.", 409)
-    return ok(s_product(p), 201)
+    return ok(s_product(p, request.prefs.low_stock_threshold), 201)
 
 
 @api("GET", "PATCH")
@@ -319,7 +383,7 @@ def product_detail(request, pk):
             return fail("That product already exists.", 409)
         if variants is not None and old_key:
             images.delete(old_key)
-    return ok(s_product(p))
+    return ok(s_product(p, request.prefs.low_stock_threshold))
 
 
 @api("GET", "POST")
@@ -385,6 +449,7 @@ def sales(request):
         o, amount=money(d, "amount"), customer_name=text(d, "customer", "Walk-in"),
         status=status, product=product, quantity=whole(d, "quantity", 1),
     )
+    svc.sync_email_notifications(o)
     return ok(s_sale(sale), 201)
 
 
@@ -396,6 +461,7 @@ def sale_detail(request, pk):
         return fail("status must be Paid or Pending.")
     sale.status = status
     sale.save(update_fields=["status"])
+    svc.sync_email_notifications(request.owner)
     return ok(s_sale(sale))
 
 
@@ -425,7 +491,7 @@ def expenses(request):
 @api("GET")
 def stock(request):
     products = svc.with_stock(m.Product.objects.filter(owner=request.owner).select_related("supplier"))
-    return ok([s_product(p) for p in products])
+    return ok([s_product(p, request.prefs.low_stock_threshold) for p in products])
 
 
 @api("GET")
@@ -435,7 +501,7 @@ def batches(request):
         rows, total = page(request, qs)
         return with_total(ok([s_batch(b) for b in rows]), total)
     try:
-        limit = int(request.GET.get("min_age", 45))
+        limit = int(request.GET.get("min_age", request.prefs.slow_stock_days))
     except ValueError:
         return fail("min_age must be a whole number.")
     # The slow-moving filter depends on age_days, so it runs before paging.
@@ -468,6 +534,7 @@ def purchase_receive(request, pk):
             return fail("This order was already received.", 409)
         svc.receive_stock(request.owner, product=p.product, quantity=p.quantity, unit_cost=p.unit_cost, supplier=p.supplier, purchase=p)
     p.refresh_from_db()
+    svc.sync_email_notifications(request.owner)
     return ok(s_purchase(p))
 
 
@@ -508,7 +575,8 @@ def receive(request):
         raise
     if replace:
         images.delete(old_key)
-    return ok({**s_batch(batch), "product": s_product(product)}, 201)
+    svc.sync_email_notifications(o)
+    return ok({**s_batch(batch), "product": s_product(product, request.prefs.low_stock_threshold)}, 201)
 
 
 @api("GET", auth=False)
@@ -519,14 +587,15 @@ def product_image(request, key):
     except ValueError:
         return fail("size must be a whole number.")
     size = next((s for s in images.SIZES if s >= wanted), images.SIZES[-1])
-    path = images.variant_path(key, size)
-    if path is None:
+    image = images.open_variant(key, size)
+    if image is None:
         raise Http404
     etag = f'"{key}-{size}"'
     if etag in [tag.strip() for tag in request.headers.get("If-None-Match", "").split(",")]:
+        image.close()
         response = HttpResponseNotModified()
     else:
-        response = FileResponse(path.open("rb"), content_type="image/webp")
+        response = FileResponse(image, content_type="image/webp")
     response["ETag"] = etag
     response["Cache-Control"] = "public, max-age=86400"
     return response
@@ -545,43 +614,52 @@ def dashboard(request):
 
     o = request.owner
     pending = m.Sale.objects.filter(owner=o, status=m.Sale.PENDING).aggregate(n=Count("id"), t=Sum("amount"))
+    prefs, _ = m.UserSettings.objects.get_or_create(owner=o)
     cur["change_vs_previous_pct"] = {k: change(k) for k in ("revenue", "gross_profit", "expenses", "net_profit")}
     cur["forecast"] = svc.forecast(cur)
     cur["pending_payments"] = {"count": pending["n"], "total": svc.money_out(pending["t"])}
     cur["low_stock"] = [
         p["name"]
-        for p in map(s_product, svc.with_stock(m.Product.objects.filter(owner=o).select_related("supplier")))
+        for p in (
+            s_product(product, prefs.low_stock_threshold)
+            for product in svc.with_stock(m.Product.objects.filter(owner=o).select_related("supplier"))
+        )
         if p["low_stock"]
     ]
     cur["slow_batches"] = sum(
-        1 for b in m.StockBatch.objects.filter(owner=o, quantity_left__gt=0) if b.age_days > 45
+        1 for b in m.StockBatch.objects.filter(owner=o, quantity_left__gt=0) if b.age_days > prefs.slow_stock_days
     )
+    svc.sync_email_notifications(o)
     return ok(cur)
 
 
 @api("GET")
 def reports(request):
-    first = m.Sale.objects.filter(owner=request.owner).order_by("date").values_list("date", flat=True).first()
-    today = timezone.localdate()
-    y, mo = (first.year, first.month) if first else (today.year, today.month)
-    rows = []
-    while (y, mo) <= (today.year, today.month):
-        s = svc.month_summary(request.owner, y, mo)
-        rows.append({k: s[k] for k in ("month", "revenue", "expenses", "gross_profit", "net_profit")})
-        y, mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
-    return ok(rows)
+    return ok(svc.monthly_reports(request.owner, timezone.localdate()))
 
 
 @api("GET")
 def insights(request):
+    svc.sync_email_notifications(request.owner)
     return ok(svc.insights(request.owner))
 
 
-@api("GET", "PATCH")
+@api("GET", "PATCH", max_body=1500000)
 def app_settings(request):
     prefs, _ = m.UserSettings.objects.get_or_create(owner=request.owner)
     if request.method == "PATCH":
         d = request.data
+        known = {
+            "goal_period", "revenue_goal", "theme", "currency", "confirm_currency_change",
+            "time_zone", "business_name", "business_logo", "business_email", "business_phone",
+            "business_logo_zoom", "business_logo_x", "business_logo_y",
+            "low_stock_threshold", "slow_stock_days", "reorder_lead_days", "safety_stock_days",
+            "reorder_target_days",
+            "notify_low_stock", "notify_slow_stock", "notify_goal_reached",
+        }
+        unknown = set(d) - known
+        if unknown:
+            return fail(f"Unsupported setting: {sorted(unknown)[0]}.")
         if "goal_period" in d:
             period = str(d["goal_period"] or "")
             if period not in dict(m.UserSettings.PERIODS):
@@ -589,13 +667,242 @@ def app_settings(request):
             prefs.goal_period = period
         if "revenue_goal" in d:
             prefs.revenue_goal = money(d, "revenue_goal", required=False)
-        prefs.save()
-    goal = prefs.revenue_goal
-    return ok({
+        if "theme" in d:
+            if not isinstance(d["theme"], str) or d["theme"] not in dict(m.UserSettings._meta.get_field("theme").choices):
+                return fail("theme must be light or dark.")
+            prefs.theme = d["theme"]
+        if "currency" in d:
+            currency = d["currency"]
+            if not isinstance(currency, str) or currency not in dict(m.UserSettings.CURRENCY_CHOICES):
+                return fail("Choose a supported currency.")
+            if currency != prefs.currency and d.get("confirm_currency_change") is not True:
+                return fail("Confirm that changing currency does not convert recorded amounts.")
+            prefs.currency = currency
+        if "time_zone" in d:
+            time_zone = d["time_zone"]
+            if not isinstance(time_zone, str) or time_zone not in available_timezones():
+                return fail("Choose a valid IANA time zone.")
+            prefs.time_zone = time_zone
+        for field, max_length in (("business_name", 120), ("business_phone", 32)):
+            if field in d:
+                value = d[field]
+                if not isinstance(value, str) or len(value.strip()) > max_length:
+                    return fail(f"{field} must be {max_length} characters or fewer.")
+                setattr(prefs, field, value.strip())
+        for field, minimum, maximum in (
+            ("business_logo_zoom", 100, 300), ("business_logo_x", -100, 100),
+            ("business_logo_y", -100, 100),
+        ):
+            if field in d:
+                value = d[field]
+                if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                    return fail(f"{field} must be a whole number between {minimum} and {maximum}.")
+                setattr(prefs, field, value)
+        if "business_email" in d:
+            value = d["business_email"]
+            if not isinstance(value, str) or len(value.strip()) > 254:
+                return fail("business_email must be a valid email address.")
+            value = value.strip()
+            if value:
+                try:
+                    validate_email(value)
+                except ValidationError:
+                    return fail("business_email must be a valid email address.")
+            prefs.business_email = value
+        if "low_stock_threshold" in d:
+            try:
+                threshold = Decimal(str(d["low_stock_threshold"]))
+                if not threshold.is_finite() or not Decimal("0.01") <= threshold <= Decimal("1.000"):
+                    raise InvalidOperation
+                prefs.low_stock_threshold = threshold.quantize(Decimal("0.001"))
+            except (InvalidOperation, TypeError, ValueError):
+                return fail("low_stock_threshold must be between 0.01 and 1.")
+        for field, maximum in (
+            ("slow_stock_days", 3650), ("reorder_lead_days", 365), ("safety_stock_days", 365),
+            ("reorder_target_days", 365),
+        ):
+            if field in d:
+                value = d[field]
+                if isinstance(value, bool):
+                    return fail(f"{field} must be a whole number between 1 and {maximum}.")
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    return fail(f"{field} must be a whole number between 1 and {maximum}.")
+                if value < 1 or value > maximum or str(value) != str(d[field]):
+                    return fail(f"{field} must be a whole number between 1 and {maximum}.")
+                setattr(prefs, field, value)
+        for field in ("notify_low_stock", "notify_slow_stock", "notify_goal_reached"):
+            if field in d:
+                if not isinstance(d[field], bool):
+                    return fail(f"{field} must be true or false.")
+                if d[field] and (not prefs.email_verified or not svc.email_delivery_configured()):
+                    return fail("Verify your account email and configure secure email delivery before enabling alerts.", 400)
+                setattr(prefs, field, d[field])
+        variants = image_data(d, "business_logo")
+        new_key = images.save(variants) if variants else ""
+        fields = set(d) - {"confirm_currency_change", "business_logo"}
+        try:
+            with transaction.atomic():
+                if variants is not None:
+                    old_key = m.UserSettings.objects.select_for_update().get(pk=prefs.pk).business_logo_key
+                    prefs.business_logo_key = new_key
+                    prefs.business_logo_fingerprint = sha256(variants[1000]).hexdigest() if variants else None
+                    fields.update({"business_logo_key", "business_logo_fingerprint"})
+                    if old_key:
+                        transaction.on_commit(lambda: images.delete(old_key))
+                if fields:
+                    prefs.save(update_fields=fields)
+        except IntegrityError:
+            if new_key:
+                images.delete(new_key)
+            others = m.UserSettings.objects.exclude(pk=prefs.pk)
+            if "business_name" in fields and prefs.business_name_fingerprint and others.filter(
+                business_name_fingerprint=prefs.business_name_fingerprint
+            ).exists():
+                return fail("That company name is already in use by another account.", 409)
+            if variants and others.filter(business_logo_fingerprint=prefs.business_logo_fingerprint).exists():
+                return fail("That company logo is already in use by another account.", 409)
+            raise
+        except Exception:
+            if new_key:
+                images.delete(new_key)
+            raise
+        svc.sync_email_notifications(request.owner)
+    with timezone.override(prefs.time_zone):
+        goal = prefs.revenue_goal
+        progress = svc.goal_progress(request.owner, goal, prefs.goal_period) if goal is not None else None
+    response = ok({
         "revenue_goal": goal,
         "goal_period": prefs.goal_period,
-        "progress": svc.goal_progress(request.owner, goal, prefs.goal_period) if goal is not None else None,
+        "progress": progress,
+        "theme": prefs.theme,
+        "currency": prefs.currency,
+        "time_zone": prefs.time_zone,
+        "business_name": prefs.business_name,
+        "business_logo_url": reverse("product_image", args=[prefs.business_logo_key]) if prefs.business_logo_key else "",
+        "business_logo_zoom": prefs.business_logo_zoom,
+        "business_logo_x": prefs.business_logo_x,
+        "business_logo_y": prefs.business_logo_y,
+        "business_email": prefs.business_email,
+        "business_phone": prefs.business_phone,
+        "low_stock_threshold": prefs.low_stock_threshold,
+        "slow_stock_days": prefs.slow_stock_days,
+        "reorder_lead_days": prefs.reorder_lead_days,
+        "safety_stock_days": prefs.safety_stock_days,
+        "reorder_target_days": prefs.reorder_target_days,
+        "email_verified": prefs.email_verified,
+        "email_delivery_configured": svc.email_delivery_configured(),
+        "notify_low_stock": prefs.notify_low_stock,
+        "notify_slow_stock": prefs.notify_slow_stock,
+        "notify_goal_reached": prefs.notify_goal_reached,
     })
+    response["Cache-Control"] = "no-store, private"
+    return response
+
+
+@api("POST", max_body=1024)
+def verify_settings_email(request):
+    if not request.owner.email:
+        return fail("Add an account email before requesting verification.", 400)
+    if not svc.email_delivery_configured():
+        return fail("Secure email delivery is not configured.", 503)
+    svc.send_magic_link(request.owner.email)
+    return ok({"message": "A sign-in and email verification link was sent."})
+
+
+@api("POST", max_body=1024)
+def request_account_confirmation(request):
+    action = request.data.get("action")
+    svc.request_account_action(request.owner, action)
+    return ok({"message": f"Confirmation email sent for {action}."})
+
+
+def _consume_account_action(request, action):
+    if request.data.get("confirmation") != action.upper():
+        raise svc.ServiceError(f"Type {action.upper()} to confirm this action.")
+    token = request.data.get("token")
+    if not isinstance(token, str) or len(token) > 200:
+        raise svc.ServiceError("A valid email confirmation token is required.")
+    return svc.consume_account_action(action, token)
+
+
+@api("POST", auth=False, max_body=4096)
+def account_export(request):
+    with transaction.atomic():
+        action_token = _consume_account_action(request, m.AccountActionToken.EXPORT)
+        owner_id = action_token.owner_id
+        tables = [
+            ("supplier", m.Supplier, ("id", "name", "supplies")),
+            ("product", m.Product, ("id", "name", "category", "price", "cost", "target_stock", "supplier_id")),
+            ("stock_batch", m.StockBatch, ("id", "product_id", "supplier_id", "quantity_received", "quantity_left", "unit_cost", "received_on")),
+            ("stock_movement", m.StockMovement, ("id", "product_id", "batch_id", "sale_id", "kind", "quantity", "unit_cost", "on", "note")),
+            ("customer", m.Customer, ("id", "name")),
+            ("sale", m.Sale, ("id", "customer_id", "product_id", "quantity", "amount", "cogs", "status", "date")),
+            ("expense", m.Expense, ("id", "category", "amount", "date")),
+            ("purchase", m.Purchase, ("id", "product_id", "supplier_id", "quantity", "unit_cost", "status", "ordered_on", "delivered_on")),
+            ("settings", m.UserSettings, (
+                "revenue_goal", "goal_period", "theme", "currency", "time_zone", "business_name",
+                "business_email", "business_phone", "business_logo_zoom", "business_logo_x", "business_logo_y",
+                "low_stock_threshold", "slow_stock_days",
+                "reorder_lead_days", "safety_stock_days", "reorder_target_days",
+                "notify_low_stock", "notify_slow_stock",
+                "notify_goal_reached",
+            )),
+        ]
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["record_type", "record_id", "data"])
+        owner = action_token.owner
+        writer.writerow([
+            "account", owner.pk,
+            json.dumps({
+                "username": owner.username,
+                "email": owner.email,
+                "terms_acceptance": m.TermsAcceptance.objects.filter(user=owner).values(
+                    "accepted_at", "version",
+                ).first(),
+            }, cls=DjangoJSONEncoder, ensure_ascii=True, sort_keys=True),
+        ])
+        for record_type, model, fields in tables:
+            records = model.objects.filter(owner_id=owner_id).values(*fields)
+            for row in records.iterator():
+                record_id = row.pop("id", "")
+                writer.writerow([
+                    record_type,
+                    record_id,
+                    json.dumps(row, cls=DjangoJSONEncoder, ensure_ascii=True, sort_keys=True),
+                ])
+    response = HttpResponse(output.getvalue(), content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = 'attachment; filename="nexa-account-export.csv"'
+    response["Cache-Control"] = "no-store, private"
+    response["Pragma"] = "no-cache"
+    return response
+
+
+@api("POST", auth=False, max_body=4096)
+def account_delete(request):
+    with transaction.atomic():
+        action_token = _consume_account_action(request, m.AccountActionToken.DELETE)
+        owner = action_token.owner
+        photo_keys = list(
+            m.Product.objects.filter(owner=owner).exclude(image_key="").values_list("image_key", flat=True)
+        )
+        logo_key = m.UserSettings.objects.filter(owner=owner).values_list("business_logo_key", flat=True).first()
+        if logo_key:
+            photo_keys.append(logo_key)
+        m.MagicLink.objects.filter(email__iexact=owner.email).delete()
+        m.LoginAttempt.objects.filter(username__iexact=owner.username).delete()
+        owner.delete()
+
+        def cleanup_photos():
+            for key in photo_keys:
+                images.delete(key)
+
+        transaction.on_commit(cleanup_photos)
+    response = ok({"message": "Your Nexa account and associated data were deleted."})
+    response["Cache-Control"] = "no-store, private"
+    return response
 
 
 @api("GET")

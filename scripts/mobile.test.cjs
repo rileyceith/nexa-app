@@ -15,18 +15,17 @@ function build(api) {
   return spawnSync(process.execPath, [script], { cwd: root, env, encoding: "utf8" });
 }
 
-test("mobile bundle uses local React and requires an explicit HTTPS API", () => {
+test("mobile bundle includes the frontend and requires an explicit HTTPS API", () => {
   try {
     let result = build();
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /not set/);
     assert.match(fs.readFileSync(path.join(output, "mobile-config.js"), "utf8"), /window\.NEXA_API = ""/);
     const html = fs.readFileSync(path.join(output, "index.html"), "utf8");
-    assert.match(html, /src="react\.production\.min\.js"/);
-    assert.match(html, /src="react-dom\.production\.min\.js"/);
     assert.ok(html.indexOf('src="mobile-config.js"') < html.indexOf('src="Nexa.js"'));
     assert.doesNotMatch(html, /cdnjs\.cloudflare\.com\/ajax\/libs\/react/);
-    for (const file of ["Nexa.css", "Nexa.js", "react.production.min.js", "react-dom.production.min.js"]) {
+    assert.doesNotMatch(html, /react(?:-dom)?\.production\.min\.js/);
+    for (const file of ["Nexa.css", "Nexa.js"]) {
       assert.ok(fs.statSync(path.join(output, file)).size > 0);
     }
 

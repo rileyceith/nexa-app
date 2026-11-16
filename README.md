@@ -19,11 +19,11 @@ Then open <http://localhost:8000/>. The Django admin is at <http://localhost:800
 
 The page and the API share one origin, so there is no CORS setup to keep in step. If you open `frontend/Nexa.html` another way (from a file or another local server), it still finds the API on port 8000 of the same host.
 
-The frontend lives in `frontend/Nexa.html`, `frontend/Nexa.css`, and `frontend/Nexa.jsx`.
-`frontend/Nexa.js` is the generated browser-ready script and must remain beside the HTML and CSS,
-including on static hosting. After editing the JSX, install Node.js and run `npm ci` once, then
-`npm run build:frontend`; commit the updated generated JavaScript with the JSX. Edits to HTML or CSS
-do not require a build.
+The frontend lives in `frontend/Nexa.html`, `frontend/Nexa.css`, and the modular React source under
+`frontend/src/`. `frontend/Nexa.js` is the generated browser-ready bundle and must remain beside
+the HTML and CSS, including on static hosting. After editing frontend source, install Node.js and
+run `npm ci` once, then `npm run build:frontend`; commit the updated generated JavaScript with the
+source changes. Edits to HTML or CSS do not require a build.
 
 ## Mobile app (Android and iOS)
 

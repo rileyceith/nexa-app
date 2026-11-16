@@ -1,195 +1,17 @@
-const { useState, useEffect, useLayoutEffect, useRef } = React;
-
-const LOCAL_DEV = location.protocol === "file:" || ["localhost", "127.0.0.1"].includes(location.hostname);
-// Locally the API is on port 8000 of the same host as the page, so localhost and 127.0.0.1 both work.
-const LOCAL_API_HOST = location.protocol === "file:" ? "localhost" : location.hostname;
-const API = window.NEXA_MOBILE ? window.NEXA_API : (window.NEXA_API || (LOCAL_DEV ? `http://${LOCAL_API_HOST}:8000/api` : "https://api.Nexa-app.com/api"));
-// The Django admin lives next to the API.
-const ADMIN_URL = API ? API.replace(/\/api\/?$/, "") + "/admin/" : "";
-const TOKEN_KEY = "nexa_token";
-async function call(path, body, token, method) {
-  if (!API) throw new Error("The mobile app's server address has not been configured.");
-  let r;
-  try {
-    r = await fetch(API + path, {
-      method: method || (body ? "POST" : "GET"),
-      headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch (e) {
-    throw new Error("Cannot reach the server. Start the backend and try again.");
-  }
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || (
-    r.status === 404 && path.startsWith("/assistant/")
-      ? "Assistant endpoints are unavailable. Restart Django and reload the app."
-      : "Something went wrong."
-  ));
-  return data;
-}
-
-const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-const IMAGE_MAX_SIDE = 1024;
-const IMAGE_MAX_BYTES = 1024 * 1024;
-
-const readFile = (file) => new Promise((resolve, reject) => {
-  const reader = new FileReader();
-  reader.onload = () => resolve(reader.result);
-  reader.onerror = () => reject(new Error('That file could not be read.'));
-  reader.readAsDataURL(file);
-});
-
-// Small files are sent unchanged; anything larger is resized and re-encoded as JPEG.
-async function shrinkImage(file) {
-  if (!IMAGE_TYPES.includes(file.type)) throw new Error('Choose a PNG, JPEG, WebP or GIF image.');
-  const src = await readFile(file);
-  const img = new Image();
-  img.src = src;
-  try {
-    await img.decode();
-  } catch (e) {
-    throw new Error('That file is not a valid image.');
-  }
-  const side = Math.max(img.naturalWidth, img.naturalHeight);
-  if (file.size <= IMAGE_MAX_BYTES && side <= IMAGE_MAX_SIDE) return src;
-  const scale = Math.min(1, IMAGE_MAX_SIDE / side);
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  for (const quality of [0.85, 0.7, 0.5]) {
-    const out = canvas.toDataURL('image/jpeg', quality);
-    if ((out.length - out.indexOf(',') - 1) * 0.75 <= IMAGE_MAX_BYTES) return out;
-  }
-  throw new Error('That photo is still too large after resizing. Try a smaller image.');
-}
-
-function Sheet({ mode, onClose, onEnter, onSwitch }) {
-  const [f, setF] = useState({ username: "", email: "", password: "", password2: "", terms: false });
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
-  const submittingRef = useRef(false);
-  const [showTerms, setShowTerms] = useState(false);
-  const [leaving, setLeaving] = useState(false);
-  const leavingRef = useRef(false);
-  const ref = useRef(null);
-  const sheetRef = useRef(null);
-  const lastH = useRef(0);
-  const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const leave = (done) => {
-    if (leavingRef.current) return;
-    leavingRef.current = true;
-    setLeaving(true);
-    setTimeout(done, reduceMotion() ? 0 : 200);
-  };
-  useEffect(() => {
-    ref.current && ref.current.focus();
-    const esc = (e) => e.key === "Escape" && leave(onClose);
-    window.addEventListener("keydown", esc);
-    return () => window.removeEventListener("keydown", esc);
-  }, []);
-  useLayoutEffect(() => {
-    const el = sheetRef.current;
-    const shown = el.style.height ? el.offsetHeight : lastH.current;
-    el.style.transition = "none";
-    el.style.height = "";
-    const to = el.offsetHeight;
-    lastH.current = to;
-    if (!shown || Math.abs(to - shown) < 1 || reduceMotion()) return;
-    el.style.height = shown + "px";
-    el.style.overflow = "hidden";
-    void el.offsetHeight;
-    el.style.transition = "height .3s cubic-bezier(.2,.7,.2,1)";
-    el.style.height = to + "px";
-  });
-  const settleHeight = (e) => {
-    if (e.target !== e.currentTarget || e.propertyName !== "height") return;
-    e.currentTarget.style.transition = "";
-    e.currentTarget.style.height = "";
-    e.currentTarget.style.overflow = "";
-  };
-  const signup = mode === "signup";
-  const set = (k) => (e) => setF({ ...f, [k]: k === "terms" ? e.target.checked : e.target.value });
-  const submit = async (e) => {
-    e.preventDefault();
-    if (leavingRef.current || submittingRef.current) return;
-    setErr("");
-    if (signup) {
-      if (f.password !== f.password2) return setErr("The passwords do not match.");
-      if (!f.terms) return setErr("You must accept the terms and conditions.");
-    }
-    submittingRef.current = true;
-    setBusy(true);
-    try {
-      const res = await call(signup ? "/auth/register/" : "/auth/login/",
-        signup ? { username: f.username, email: f.email, password: f.password, password2: f.password2, accepted_terms: f.terms }
-               : { username: f.username, password: f.password });
-      localStorage.setItem(TOKEN_KEY, res.token);
-      leave(() => onEnter(res.user));
-      return;
-    } catch (x) {
-      setErr(x.message);
-    } finally {
-      submittingRef.current = false;
-      setBusy(false);
-    }
-  };
-  return (
-    <div className={leaving ? "scrim auth-scrim leaving" : "scrim auth-scrim"} onClick={() => leave(onClose)}>
-      <form className={leaving ? "sheet auth-sheet leaving" : "sheet auth-sheet"} ref={sheetRef} role="dialog" aria-modal="true" aria-labelledby="st"
-        onClick={(e) => e.stopPropagation()} onSubmit={submit} onTransitionEnd={settleHeight} noValidate>
-        <div className="hd" key={mode}>
-          <h2 id="st">{signup ? "Create your Nexa account" : "Welcome back"}</h2>
-          <p>{signup ? "Choose an email, username and password." : "Sign in with your username and password."}</p>
-        </div>
-        <label>Username
-          <input ref={ref} type="text" required autoComplete="username" value={f.username} onChange={set("username")} />
-        </label>
-        {signup && (
-          <label>Email
-            <input type="email" required autoComplete="email" value={f.email} onChange={set("email")} />
-          </label>
-        )}
-        <label>Password
-          <input type="password" required autoComplete={signup ? "new-password" : "current-password"} value={f.password} onChange={set("password")} />
-        </label>
-        {signup && (
-          <label>Re-enter password
-            <input type="password" required autoComplete="new-password" value={f.password2} onChange={set("password2")} />
-          </label>
-        )}
-        {signup && (
-          <>
-            <label className="agree">
-              <input type="checkbox" checked={f.terms} onChange={set("terms")} />
-              <span>I accept the <button type="button" className="linkbtn" onClick={() => setShowTerms(!showTerms)}>terms and conditions</button></span>
-            </label>
-            {showTerms && (
-              <div className="terms">
-                <p>1. Nexa helps you record and review your business activity. You are responsible for the accuracy of what you enter.</p>
-                <p>2. Keep your password private. You are responsible for activity on your account.</p>
-                <p>3. We store your account and business records to run the service and do not sell them.</p>
-                <p>4. Forecasts and ideas are estimates, not financial advice.</p>
-              </div>
-            )}
-          </>
-        )}
-        {err && <p className="err" role="alert">{err}</p>}
-        <div className="row">
-          <button type="button" className="btn glass" onClick={() => leave(onClose)}>Cancel</button>
-          <button type="submit" className={busy ? "btn iri busy" : "btn iri"} disabled={busy}>{busy ? "Please wait…" : signup ? "Create account" : "Sign in"}</button>
-        </div>
-        <p className="switch">
-          {signup ? "Already have an account? " : "New to Nexa? "}
-          <button type="button" className="linkbtn" onClick={() => onSwitch(signup ? "signin" : "signup")}>{signup ? "Sign in" : "Create one"}</button>
-        </p>
-      </form>
-    </div>
-  );
-}
+import React, { useEffect, useRef, useState } from "react";
+import { ADMIN_URL, API, TOKEN_KEY } from "./api/client.js";
+import { AuthSheet, RecordSheet } from "./components/index.jsx";
+import { shrinkImage } from "./features/inventory/images.js";
+import { currentUser, logout, resetPassword, verifyMagicLink } from "./features/auth/api.js";
+import { listProducts } from "./features/catalog/api.js";
+import { createExpense, createSale, listExpenses, listSales } from "./features/sales/api.js";
+import { createPurchase, listBatches, listPurchases, receivePurchase, receiveStock } from "./features/inventory/api.js";
+import { analyze, chat } from "./features/insights/api.js";
+import { getDashboard, getReports } from "./features/reports/api.js";
+import {
+  getGoalSeries, getSettings, updateSettings, verifySettingsEmail, requestAccountConfirmation,
+  exportAccountData, deleteAccount,
+} from "./features/settings/api.js";
 
 function smoothPath(p) {
   let d = `M${p[0][0]},${p[0][1]}`;
@@ -199,16 +21,22 @@ function smoothPath(p) {
   }
   return d;
 }
-const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
-const preciseMoney = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+let activeCurrency = 'USD';
+let activeTimeZone = 'Africa/Harare';
+const money = (n) => `${activeCurrency} ${Math.round(n).toLocaleString('en-US')}`;
+const preciseMoney = (n) => `${activeCurrency} ${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const wholeOrCents = (n) => (Number.isInteger(n) ? money(n) : preciseMoney(n));
-const NOW = new Date();
-const CUR = NOW.toLocaleString('en-US', { month: 'short' });
-const CUR_NEXT = new Date(NOW.getFullYear(), NOW.getMonth() + 1, 1).toLocaleString('en-US', { month: 'short' });
-const MONTHS = [CUR];
-const NEXT = { [CUR]: CUR_NEXT };
-const THIS_MONTH = `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, '0')}`;
-const PREV_MONTH = new Date(NOW.getFullYear(), NOW.getMonth() - 1, 1).toLocaleString('en-US', { month: 'short' });
+const monthParts = () => Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+  timeZone: activeTimeZone, year: 'numeric', month: '2-digit',
+}).formatToParts(new Date()).filter((part) => part.type === 'year' || part.type === 'month').map((part) => [part.type, Number(part.value)]));
+const currentMonthKey = () => {
+  const { year, month } = monthParts();
+  return `${year}-${String(month).padStart(2, '0')}`;
+};
+const monthName = (offset = 0) => {
+  const { year, month } = monthParts();
+  return new Date(Date.UTC(year, month - 1 + offset, 1)).toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+};
 const toNum = (v) => Number(v) || 0;
 const monthLabel = (key) => new Date(key + '-01T00:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 // The series comes from settings/series/. A yearly goal is charted as monthly bars against a twelfth of the goal.
@@ -219,7 +47,7 @@ const goalChart = (series) => {
   const target = toNum(series.target);
   const bars = (name, label) => series.buckets.map((b, i) => ({ name: name(b.start, i), label: label(b.start, i), value: toNum(b.amount) }));
   const charts = {
-    day: { buckets: bars(shortDate, (iso, i) => (i === 0 || (i + 1) % 5 === 0 ? String(i + 1) : '')), heading: `Daily sales, ${CUR}`, actual: 'Daily sales', targetText: `Daily target ${wholeOrCents(target)}` },
+    day: { buckets: bars(shortDate, (iso, i) => (i === 0 || (i + 1) % 5 === 0 ? String(i + 1) : '')), heading: `Daily sales, ${monthName()}`, actual: 'Daily sales', targetText: `Daily target ${wholeOrCents(target)}` },
     week: { buckets: bars((iso) => `Week of ${shortDate(iso)}`, shortDate), heading: 'Weekly sales, last 8 weeks', actual: 'Weekly sales', targetText: `Weekly target ${wholeOrCents(target)}` },
     month: { buckets: bars(monthYear, monthShort), heading: 'Monthly sales, last 6 months', actual: 'Monthly sales', targetText: `Monthly target ${wholeOrCents(target)}` },
     year: { buckets: bars(monthYear, monthShort), heading: `Monthly sales, ${dateOf(series.buckets[0].start).getFullYear()}`, actual: 'Monthly sales', targetText: `Monthly target ${wholeOrCents(target)}` },
@@ -230,6 +58,21 @@ const SC = { Conservative: 0.97, Expected: 1.08, Optimistic: 1.2 };
 const RECS = [];
 const GOAL_PERIODS = [['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
 const GOAL_WORDS = { day: 'today', week: 'this week', month: 'this month', year: 'this year' };
+const DEFAULT_PREFERENCES = {
+  theme: 'light', currency: 'USD', time_zone: 'Africa/Harare',
+  business_name: '', business_logo_url: '', business_email: '', business_phone: '',
+  business_logo_zoom: 100, business_logo_x: 0, business_logo_y: 0,
+  low_stock_threshold: '0.350', slow_stock_days: 45, reorder_lead_days: 14,
+  safety_stock_days: 7, reorder_target_days: 30,
+  email_verified: false, email_delivery_configured: false,
+  notify_low_stock: false, notify_slow_stock: false, notify_goal_reached: false,
+};
+const CURRENCIES = ['USD', 'ZWL', 'ZAR', 'EUR', 'GBP'];
+const TIME_ZONES = [
+  'Africa/Harare', 'Africa/Johannesburg', 'Africa/Nairobi', 'Africa/Lagos',
+  'UTC', 'Europe/London', 'Europe/Paris', 'America/New_York', 'America/Los_Angeles',
+  'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Australia/Sydney',
+];
 const shortDate = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
 const IC = {
@@ -277,7 +120,7 @@ function Trend({ series, next }) {
     <div className='nbars' role='img' aria-label={`Weekly sales ${series.map(money).join(', ')} with a forecast of ${money(next)} for next week`}>
       {vals.map((v, i) => (
         <div className='ncol' key={i}>
-          <b>{v >= 1000 ? '$' + (v / 1000).toFixed(1) + 'k' : money(v)}</b>
+          <b>{v >= 1000 ? `${activeCurrency} ${(v / 1000).toFixed(1)}k` : money(v)}</b>
           <div className='ntrack'>
             <i className={i === 4 ? 'fc' : ''} style={{ height: (v / max) * 100 + '%' }} />
           </div>
@@ -305,100 +148,6 @@ function GoalTrend({ buckets, current, target, label }) {
   );
 }
 
-function RecordSheet({ type, onClose, onSave, products = [] }) {
-  const [who, setWho] = useState('');
-  const [amt, setAmt] = useState('');
-  const [st, setSt] = useState('Paid');
-  const [productId, setProductId] = useState('');
-  const [qty, setQty] = useState('1');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const savingRef = useRef(false);
-  const ref = useRef(null);
-  useEffect(() => {
-    ref.current && ref.current.focus();
-    const esc = (e) => e.key === 'Escape' && !savingRef.current && onClose();
-    window.addEventListener('keydown', esc);
-    return () => window.removeEventListener('keydown', esc);
-  }, []);
-  const sale = type === 'sale';
-  const product = sale ? products.find((p) => String(p[8]) === productId) || null : null;
-  const qtyNum = Number(qty);
-  const pickProduct = (id) => {
-    const item = products.find((p) => String(p[8]) === id);
-    setProductId(id);
-    setQty('1');
-    if (item) setAmt(Number(item[2]).toFixed(2));
-  };
-  const changeQty = (value) => {
-    setQty(value);
-    if (product && Number(value) > 0) setAmt((Number(product[2]) * Number(value)).toFixed(2));
-  };
-  const submit = async (event) => {
-    event.preventDefault();
-    const amount = parseFloat(amt);
-    if (!(amount > 0) || savingRef.current) return;
-    if (product) {
-      if (!Number.isInteger(qtyNum) || qtyNum < 1) {
-        setError('Quantity must be a whole number of at least 1.');
-        return;
-      }
-      if (qtyNum > product[4]) {
-        setError(`Only ${product[4]} ${product[0]} in stock.`);
-        return;
-      }
-    }
-    savingRef.current = true;
-    setSaving(true);
-    setError('');
-    try {
-      await onSave({ who: who.trim() || (sale ? 'Walk-in' : 'General'), a: amount, st, product, qty: qtyNum });
-    } catch (saveError) {
-      savingRef.current = false;
-      setSaving(false);
-      setError(saveError.message);
-    }
-  };
-  return (
-    <div className='scrim' onClick={() => !saving && onClose()}>
-      <form className='sheet' role='dialog' aria-modal='true' aria-labelledby='rt' onClick={(e) => e.stopPropagation()}
-        onSubmit={submit}>
-        <h2 id='rt'>{sale ? 'Record a sale' : 'Record an expense'}</h2>
-        <p>{sale ? 'It is added to this month and updates your totals.' : 'It is added to this month and comes off your profit.'}</p>
-        <label>{sale ? 'Customer' : 'Category'}<input ref={ref} type='text' value={who} onChange={(e) => setWho(e.target.value)} placeholder={sale ? 'Walk-in' : 'Utilities'} disabled={saving} /></label>
-        {sale && (
-          <label>Product
-            <select value={productId} onChange={(e) => pickProduct(e.target.value)} disabled={saving}>
-              <option value=''>No product</option>
-              {products.map((p) => (
-                <option key={p[8]} value={String(p[8])} disabled={p[4] <= 0}>
-                  {p[4] > 0 ? `${p[0]} · ${p[4]} in stock` : `${p[0]} · out of stock`}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        {product && (
-          <label>{`Quantity · ${product[4]} in stock`}
-            <input type='number' min='1' max={product[4]} step='1' required value={qty} onChange={(e) => changeQty(e.target.value)} disabled={saving} />
-          </label>
-        )}
-        <label>Amount (USD)<input type='number' min='0' step='0.01' required value={amt} onChange={(e) => setAmt(e.target.value)} disabled={saving} /></label>
-        {sale && (
-          <div className='nseg' role='group' aria-label='Payment status' style={{ marginBottom: 12 }}>
-            {['Paid', 'Pending'].map((s) => <button type='button' key={s} aria-pressed={st === s} onClick={() => setSt(s)} disabled={saving}>{s}</button>)}
-          </div>
-        )}
-        {error && <p className='err' role='alert'>{error}</p>}
-        <div className='row'>
-          <button type='button' className='btn glass' onClick={onClose} disabled={saving}>Cancel</button>
-          <button type='submit' className='btn iri' disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
 const PRODUCTS = [];
 const NAV = [
   ['overview', 'Overview', 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z', 'How your business is doing'],
@@ -418,6 +167,28 @@ const BATCHES0 = [];
 
 // image_url is an API-relative path, so it is resolved against the API base.
 const productImage = (path) => (path ? new URL(path + '?size=400', API).href : '');
+const businessProfileFromSettings = (settings) => ({
+  name: settings.business_name, logo: settings.business_logo_url,
+  zoom: settings.business_logo_zoom, x: settings.business_logo_x, y: settings.business_logo_y,
+});
+function BusinessLogo({ src, alt, zoom, x, y, preview = false }) {
+  return (
+    <span className={`business-logo-frame${preview ? ' business-logo-preview' : ''}`}>
+      <img src={src} alt={alt} style={{ transform: `translate(${x}%, ${y}%) scale(${zoom / 100})` }} />
+    </span>
+  );
+}
+function BusinessBrand({ name, logo, zoom, x, y }) {
+  return (
+    <div className='nlogo'>
+      <div>Nexa</div>
+      {(name || logo) && <div className='business-brand'>
+        {logo && <BusinessLogo src={productImage(logo)} alt='' zoom={zoom} x={x} y={y} />}
+        {name && <span>{name}</span>}
+      </div>}
+    </div>
+  );
+}
 // Maps API rows to the tuple shapes the dashboard keeps in state.
 const productRow = (p) => [p.name, p.category, Number(p.price), Number(p.cost), 0, p.target_stock, p.supplier || '', productImage(p.image_url), p.id];
 const batchRow = (b) => [b.id, b.product, b.quantity_received, b.quantity_left, b.age_days, Number(b.unit_cost), b.supplier || ''];
@@ -431,10 +202,11 @@ const purchaseRow = (p) => [
   dateLabel(p.status === 'Delivered' ? p.delivered_on : p.ordered_on), p.product, p.quantity, p.id,
 ];
 
-function Dashboard({ dark, setTheme, onExit }) {
+function Dashboard({ setTheme, onExit }) {
   const [isStaff, setIsStaff] = useState(false);
+  const [accountEmail, setAccountEmail] = useState('');
   const [nav, setNav] = useState('overview');
-  const [m, setM] = useState(CUR);
+  const [m, setM] = useState(monthName());
   const [scn, setScn] = useState('Expected');
   const [pri, setPri] = useState('All');
   const [done, setDone] = useState({});
@@ -478,14 +250,31 @@ function Dashboard({ dark, setTheme, onExit }) {
   const [goalMsg, setGoalMsg] = useState({ text: '', error: false });
   const [goalBusy, setGoalBusy] = useState(false);
   const goalLock = useRef(false);
+  const slowLimitOverridden = useRef(false);
+  const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES);
+  const [businessProfile, setBusinessProfile] = useState({ name: '', logo: '', zoom: 100, x: 0, y: 0 });
+  const [pendingLogo, setPendingLogo] = useState(null);
+  const [logoError, setLogoError] = useState('');
+  const [logoBusy, setLogoBusy] = useState(false);
+  const logoInput = useRef(null);
+  const logoSelection = useRef(0);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [settingsMsg, setSettingsMsg] = useState({ text: '', error: false });
+  const [themeBusy, setThemeBusy] = useState(false);
+  const [themeMsg, setThemeMsg] = useState({ text: '', error: false });
+  const [accountMsg, setAccountMsg] = useState({ text: '', error: false });
+  const figureLoadSequence = useRef(0);
 
   useEffect(() => {
-    call('/me/', null, localStorage.getItem(TOKEN_KEY)).then((u) => setIsStaff(!!u.is_staff)).catch(() => {});
+    currentUser(localStorage.getItem(TOKEN_KEY)).then((u) => {
+      setIsStaff(!!u.is_staff);
+      setAccountEmail(u.email || '');
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
     const token = localStorage.getItem(TOKEN_KEY);
-    Promise.all([call('/products/', null, token), call('/batches/', null, token), call('/purchases/', null, token)])
+    Promise.all([listProducts(token), listBatches(token), listPurchases(token)])
       .then(([productList, batchList, orderList]) => {
         setProdList(productList.map(productRow));
         setBatches(batchList.map(batchRow));
@@ -496,13 +285,16 @@ function Dashboard({ dark, setTheme, onExit }) {
 
   const loadFigures = () => {
     const token = localStorage.getItem(TOKEN_KEY);
+    const month = currentMonthKey();
+    const sequence = ++figureLoadSequence.current;
     return Promise.all([
-      call(`/dashboard/?month=${THIS_MONTH}`, null, token),
-      call(`/expenses/?month=${THIS_MONTH}`, null, token),
-      call('/sales/', null, token),
-      call('/reports/', null, token),
+      getDashboard(month, token),
+      listExpenses(month, token),
+      listSales(token),
+      getReports(token),
     ])
       .then(([figures, expenses, saleList, reports]) => {
+        if (sequence !== figureLoadSequence.current) return;
         setDash(figures);
         setExpenseSummary(expenses);
         setExpList(expenses.items.map((e) => [e.category, toNum(e.amount), shortDate(e.date)]));
@@ -510,13 +302,24 @@ function Dashboard({ dark, setTheme, onExit }) {
         setReportRows(reports);
         setDashError('');
       })
-      .catch((error) => setDashError(error.message));
+      .catch((error) => {
+        if (sequence === figureLoadSequence.current) setDashError(error.message);
+      });
   };
   useEffect(() => { loadFigures(); }, []);
 
   const applyGoal = (data) => {
     setGoalData(data);
     setGoalForm({ amount: data.revenue_goal == null ? '' : String(Number(data.revenue_goal)), period: data.goal_period });
+    setPreferences((current) => ({ ...current, ...data }));
+    setBusinessProfile(businessProfileFromSettings(data));
+    activeCurrency = data.currency || activeCurrency;
+    const timeZoneChanged = data.time_zone && data.time_zone !== activeTimeZone;
+    activeTimeZone = data.time_zone || activeTimeZone;
+    setM(monthName());
+    setTheme(data.theme === 'dark');
+    if (!slowLimitOverridden.current) setLimit(data.slow_stock_days || 45);
+    if (timeZoneChanged) loadFigures();
   };
   const persistGoal = async (body, okText) => {
     if (goalLock.current) return;
@@ -524,7 +327,7 @@ function Dashboard({ dark, setTheme, onExit }) {
     setGoalBusy(true);
     setGoalMsg({ text: '', error: false });
     try {
-      await call('/settings/', body, localStorage.getItem(TOKEN_KEY), 'PATCH');
+      await updateSettings(body, localStorage.getItem(TOKEN_KEY));
       await loadGoal();
       setGoalMsg({ text: okText, error: false });
     } catch (error) {
@@ -542,9 +345,125 @@ function Dashboard({ dark, setTheme, onExit }) {
   };
   const clearGoal = () => persistGoal({ revenue_goal: null }, 'Revenue goal cleared.');
 
+  const pickBusinessLogo = async (event) => {
+    const input = event.target;
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const selection = ++logoSelection.current;
+    setLogoError('');
+    setLogoBusy(true);
+    try {
+      const image = await shrinkImage(file);
+      if (selection === logoSelection.current) setPendingLogo(image);
+    } catch (error) {
+      if (selection === logoSelection.current) {
+        input.value = '';
+        setLogoError(error.message);
+      }
+    } finally {
+      if (selection === logoSelection.current) setLogoBusy(false);
+    }
+  };
+
+  const saveTheme = async (event) => {
+    const theme = event.target.value;
+    const previousTheme = preferences.theme;
+    setPreferences((current) => ({ ...current, theme }));
+    setTheme(theme === 'dark');
+    setThemeBusy(true);
+    setThemeMsg({ text: '', error: false });
+    try {
+      const saved = await updateSettings({ theme }, localStorage.getItem(TOKEN_KEY));
+      setPreferences((current) => ({ ...current, theme: saved.theme }));
+      setTheme(saved.theme === 'dark');
+      setThemeMsg({ text: 'Theme saved.', error: false });
+    } catch (error) {
+      setPreferences((current) => ({ ...current, theme: previousTheme }));
+      setTheme(previousTheme === 'dark');
+      setThemeMsg({ text: error.message, error: true });
+    } finally {
+      setThemeBusy(false);
+    }
+  };
+
+  const savePreferences = async (event) => {
+    event.preventDefault();
+    if (logoBusy) return;
+    const currencyChanged = preferences.currency !== activeCurrency;
+    if (currencyChanged && !window.confirm(
+      'Changing the currency does not convert any previously recorded amounts. It only changes how the same numbers are labeled. Continue?',
+    )) return;
+    setSettingsBusy(true);
+    setSettingsMsg({ text: '', error: false });
+    try {
+      const body = {
+        currency: preferences.currency,
+        confirm_currency_change: currencyChanged,
+        time_zone: preferences.time_zone,
+        business_name: preferences.business_name,
+        business_logo_zoom: preferences.business_logo_zoom,
+        business_logo_x: preferences.business_logo_x,
+        business_logo_y: preferences.business_logo_y,
+        business_email: preferences.business_email,
+        business_phone: preferences.business_phone,
+        low_stock_threshold: preferences.low_stock_threshold,
+        slow_stock_days: preferences.slow_stock_days,
+        reorder_lead_days: preferences.reorder_lead_days,
+        safety_stock_days: preferences.safety_stock_days,
+        reorder_target_days: preferences.reorder_target_days,
+        notify_low_stock: preferences.notify_low_stock,
+        notify_slow_stock: preferences.notify_slow_stock,
+        notify_goal_reached: preferences.notify_goal_reached,
+      };
+      if (pendingLogo !== null) body.business_logo = pendingLogo;
+      const saved = await updateSettings(body, localStorage.getItem(TOKEN_KEY));
+      setPreferences((current) => ({ ...current, ...saved, theme: current.theme }));
+      setBusinessProfile(businessProfileFromSettings(saved));
+      setPendingLogo(null);
+      if (logoInput.current) logoInput.current.value = '';
+      activeCurrency = saved.currency;
+      const timeZoneChanged = saved.time_zone !== activeTimeZone;
+      activeTimeZone = saved.time_zone;
+      setM(monthName());
+      if (!slowLimitOverridden.current) setLimit(saved.slow_stock_days);
+      if (timeZoneChanged) await loadFigures();
+      setSettingsMsg({ text: 'Settings saved.', error: false });
+    } catch (error) {
+      setSettingsMsg({ text: error.message, error: true });
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
+
+  const sendEmailVerification = async () => {
+    setSettingsBusy(true);
+    setSettingsMsg({ text: '', error: false });
+    try {
+      const result = await verifySettingsEmail(localStorage.getItem(TOKEN_KEY));
+      setSettingsMsg({ text: result.message, error: false });
+    } catch (error) {
+      setSettingsMsg({ text: error.message, error: true });
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
+
+  const requestConfirmation = async (action) => {
+    setSettingsBusy(true);
+    setAccountMsg({ text: '', error: false });
+    try {
+      const result = await requestAccountConfirmation(action, localStorage.getItem(TOKEN_KEY));
+      setAccountMsg({ text: result.message + ' Open the link in that email to continue.', error: false });
+    } catch (error) {
+      setAccountMsg({ text: error.message, error: true });
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
+
   const loadGoal = () => Promise.all([
-    call('/settings/', null, localStorage.getItem(TOKEN_KEY)),
-    call('/settings/series/', null, localStorage.getItem(TOKEN_KEY)),
+    getSettings(localStorage.getItem(TOKEN_KEY)),
+    getGoalSeries(localStorage.getItem(TOKEN_KEY)),
   ]).then(([settings, series]) => {
     applyGoal(settings);
     setGoalChartData(series);
@@ -561,7 +480,7 @@ function Dashboard({ dark, setTheme, onExit }) {
   const change = (key) => {
     if (!dash) return 'Loading figures';
     const v = D.change_vs_previous_pct[key];
-    return v == null ? `No ${PREV_MONTH} figures to compare` : `${v >= 0 ? '+' : ''}${Number(v).toFixed(1)}% vs ${PREV_MONTH}`;
+    return v == null ? `No ${monthName(-1)} figures to compare` : `${v >= 0 ? '+' : ''}${Number(v).toFixed(1)}% vs ${monthName(-1)}`;
   };
   const series = (D.weekly_sales || [0, 0, 0, 0]).map(toNum);
   const goalSeries = goalChartData ? goalChart(goalChartData) : null;
@@ -579,7 +498,7 @@ function Dashboard({ dark, setTheme, onExit }) {
   const stockOf = (n) => batches.filter((b) => b[1] === n).reduce((a, b) => a + b[3], 0);
   const ordered = Object.fromEntries(purchases.filter((x) => x[3] === 'Ordered').map((x) => [x[5], true]));
   const prods = prodList.map((p) => [p[0], p[1], p[2], p[3], stockOf(p[0]), p[5], p[6], p[7] || '', p[8]]);
-  const low = prods.filter((p) => p[5] > 0 && p[4] / p[5] < 0.35 && !ordered[p[0]]);
+  const low = prods.filter((p) => p[5] > 0 && p[4] / p[5] < Number(preferences.low_stock_threshold) && !ordered[p[0]]);
   const slow = batches.filter((b) => b[3] > 0 && b[4] > limit).sort((a, b) => b[4] - a[4]);
   const pend = sales.filter((s) => s[2] === 'Pending');
 
@@ -588,15 +507,15 @@ function Dashboard({ dark, setTheme, onExit }) {
     if (form === 'sale') {
       const body = { customer: who, amount: a, status: st };
       if (product) Object.assign(body, { product_id: product[8], quantity: qty });
-      await call('/sales/', body, token);
+      await createSale(body, token);
       loadFigures();
       loadGoal().catch(() => {});
       if (product) await refreshStock();
     } else {
-      await call('/expenses/', { category: who, amount: a }, token);
+      await createExpense({ category: who, amount: a }, token);
       loadFigures();
     }
-    setM(CUR); setForm(null);
+    setM(monthName()); setForm(null);
   };
   const askAssistant = async (event) => {
     event.preventDefault();
@@ -608,8 +527,8 @@ function Dashboard({ dark, setTheme, onExit }) {
     setAssistantMessages((messages) => [...messages, { role: 'user', text: question }]);
     setAssistantBusy(true);
     try {
-      const month = `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, '0')}`;
-      const result = await call('/assistant/chat/', { question, month }, localStorage.getItem(TOKEN_KEY));
+      const month = currentMonthKey();
+      const result = await chat({ question, month }, localStorage.getItem(TOKEN_KEY));
       setAssistantMessages((messages) => [...messages, { role: 'assistant', text: result.answer }]);
     } catch (error) {
       setAssistantError(error.message);
@@ -625,8 +544,8 @@ function Dashboard({ dark, setTheme, onExit }) {
     setAlgorithmError('');
     setAlgorithmResult(null);
     try {
-      const month = `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, '0')}`;
-      const result = await call('/assistant/analyze/', { analysis: algorithmType, month }, localStorage.getItem(TOKEN_KEY));
+      const month = currentMonthKey();
+      const result = await analyze({ analysis: algorithmType, month }, localStorage.getItem(TOKEN_KEY));
       setAlgorithmResult(result);
     } catch (error) {
       setAlgorithmError(error.message);
@@ -638,7 +557,7 @@ function Dashboard({ dark, setTheme, onExit }) {
   const refreshStock = async () => {
     const token = localStorage.getItem(TOKEN_KEY);
     try {
-      const [batchList, orderList] = await Promise.all([call('/batches/', null, token), call('/purchases/', null, token)]);
+      const [batchList, orderList] = await Promise.all([listBatches(token), listPurchases(token)]);
       setBatches(batchList.map(batchRow));
       setPurchases(orderList.map(purchaseRow));
     } catch (error) {
@@ -649,7 +568,7 @@ function Dashboard({ dark, setTheme, onExit }) {
     if (orderLock.current) return;
     orderLock.current = true;
     try {
-      await call('/purchases/', { product_id: p[8], quantity: Math.max(1, p[5] - p[4]), unit_cost: p[3] }, localStorage.getItem(TOKEN_KEY));
+      await createPurchase({ product_id: p[8], quantity: Math.max(1, p[5] - p[4]), unit_cost: p[3] }, localStorage.getItem(TOKEN_KEY));
       setStockMsg('');
       await refreshStock();
     } catch (error) {
@@ -663,7 +582,7 @@ function Dashboard({ dark, setTheme, onExit }) {
     if (orderLock.current) return;
     orderLock.current = true;
     try {
-      await call(`/purchases/${pu[7]}/receive/`, {}, localStorage.getItem(TOKEN_KEY));
+      await receivePurchase(pu[7], localStorage.getItem(TOKEN_KEY));
       await refreshStock();
       setRmsg(`${pu[6]} × ${pu[5]} received into stock.`);
     } catch (error) {
@@ -702,7 +621,7 @@ function Dashboard({ dark, setTheme, onExit }) {
     receiveLock.current = true;
     setReceiveBusy(true);
     try {
-      const { product } = await call('/receive/', body, localStorage.getItem(TOKEN_KEY));
+      const { product } = await receiveStock(body, localStorage.getItem(TOKEN_KEY));
       setProdList((l) => (l.some((p) => p[8] === product.id) ? l.map((p) => (p[8] === product.id ? productRow(product) : p)) : [...l, productRow(product)]));
       await refreshStock();
       setRf({ p: '__new', q: '', c: '', s: '', name: '', price: '', img: '', imgName: '' });
@@ -729,7 +648,7 @@ function Dashboard({ dark, setTheme, onExit }) {
   ];
   const Month = () => (
     <div className='nseg' role='group' aria-label='Month'>
-      {MONTHS.map((x) => <button key={x} aria-pressed={m === x} onClick={() => setM(x)}>{x}</button>)}
+      {[monthName()].map((x) => <button key={x} aria-pressed={m === x} onClick={() => setM(x)}>{x}</button>)}
     </div>
   );
   const Bar = ({ pct }) => <div className='dbar thin'><i style={{ width: Math.min(100, pct) + '%' }} /></div>;
@@ -786,48 +705,169 @@ function Dashboard({ dark, setTheme, onExit }) {
     ),
 
     settings: () => (
-      <div className='dgrid'>
-        <section className='dc'>
-          <Title ic={IC.settings}>Appearance</Title>
-          <p>Choose the theme for your dashboard.</p>
-          <div className='nseg' role='group' aria-label='Color theme'>
-            <button aria-pressed={!dark} onClick={() => setTheme(false)}>Light</button>
-            <button aria-pressed={dark} onClick={() => setTheme(true)}>Dark</button>
-          </div>
-        </section>
-        <section className='dc span2'>
-          <Title ic={IC.gross}>Revenue goal</Title>
-          <p>Set a sales target for a day, week, month or year. Progress counts only paid sales in the period.</p>
-          <form className='nform' onSubmit={saveGoal}>
-            <label>Sales goal (USD)
-              <input type='number' min='0' step='0.01' value={goalForm.amount} onChange={(e) => setGoalForm((f) => ({ ...f, amount: e.target.value }))} />
+      <>
+        <nav className='settings-categories' aria-label='Settings categories'>
+          <a href='#settings-appearance'>Appearance</a>
+          <a href='#settings-business'>Business</a>
+          <a href='#settings-inventory'>Inventory</a>
+          <a href='#settings-notifications'>Notifications</a>
+          <a href='#settings-goals'>Goals</a>
+          <a href='#settings-account'>Account &amp; data</a>
+        </nav>
+        <form className='dgrid settings-form' onSubmit={savePreferences}>
+          <h2 className='settings-heading span3' id='settings-appearance'>Appearance</h2>
+          <section className='dc span3'>
+            <Title ic={IC.settings}>Theme</Title>
+            <p>Theme changes are saved immediately.</p>
+            <label>Theme
+              <select value={preferences.theme} onChange={saveTheme} disabled={themeBusy}>
+                <option value='light'>Light</option><option value='dark'>Dark</option>
+              </select>
             </label>
-            <div className='goal-period'>
-              <span>Goal period</span>
-              <div className='nseg' role='group' aria-label='Goal period'>
-                {GOAL_PERIODS.map(([v, label]) => (
-                  <button key={v} type='button' aria-pressed={goalForm.period === v} onClick={() => setGoalForm((f) => ({ ...f, period: v }))}>{label}</button>
-                ))}
+            {themeMsg.text && <p className={themeMsg.error ? 'nerr' : 'nok'} role={themeMsg.error ? 'alert' : 'status'}>{themeMsg.text}</p>}
+          </section>
+          <h2 className='settings-heading span3' id='settings-business'>Business</h2>
+          <section className='dc'>
+            <Title ic={IC.gross}>Business profile</Title>
+            <label>Business name<input maxLength='120' value={preferences.business_name} onChange={(e) => setPreferences((p) => ({ ...p, business_name: e.target.value }))} /></label>
+            <label>Company logo
+              <input ref={logoInput} type='file' accept='image/png,image/jpeg,image/webp,image/gif' disabled={settingsBusy || logoBusy} onChange={pickBusinessLogo} />
+            </label>
+            <p>PNG, JPEG, WebP or GIF. Save settings to apply your logo.</p>
+            {(pendingLogo || (pendingLogo === null && businessProfile.logo)) && <>
+              <BusinessLogo preview src={pendingLogo === null ? productImage(businessProfile.logo) : pendingLogo}
+                alt='Company logo preview' zoom={preferences.business_logo_zoom} x={preferences.business_logo_x} y={preferences.business_logo_y} />
+              <label>Logo zoom: {preferences.business_logo_zoom}%
+                <input type='range' min='100' max='300' step='5' value={preferences.business_logo_zoom}
+                  onChange={(e) => setPreferences((p) => ({ ...p, business_logo_zoom: Number(e.target.value) }))} />
+              </label>
+              <label>Logo horizontal position: {preferences.business_logo_x}%
+                <input type='range' min='-100' max='100' value={preferences.business_logo_x}
+                  onChange={(e) => setPreferences((p) => ({ ...p, business_logo_x: Number(e.target.value) }))} />
+              </label>
+              <label>Logo vertical position: {preferences.business_logo_y}%
+                <input type='range' min='-100' max='100' value={preferences.business_logo_y}
+                  onChange={(e) => setPreferences((p) => ({ ...p, business_logo_y: Number(e.target.value) }))} />
+              </label>
+              <p>Positive values move the image right or down. Save settings to apply on desktop and mobile.</p>
+              <button type='button' className='btn glass' disabled={settingsBusy || logoBusy} onClick={() =>
+                setPreferences((p) => ({ ...p, business_logo_zoom: 100, business_logo_x: 0, business_logo_y: 0 }))
+              }>Reset logo position</button>
+              <button type='button' className='btn glass' disabled={settingsBusy || logoBusy} onClick={() => {
+                logoSelection.current++;
+                setPendingLogo('');
+                setLogoError('');
+                if (logoInput.current) logoInput.current.value = '';
+              }}>Remove logo</button>
+            </>}
+            {logoError && <p className='nerr' role='alert'>{logoError}</p>}
+            <label>Contact email<input type='email' maxLength='254' value={preferences.business_email} onChange={(e) => setPreferences((p) => ({ ...p, business_email: e.target.value }))} /></label>
+            <label>Contact phone<input type='tel' maxLength='32' value={preferences.business_phone} onChange={(e) => setPreferences((p) => ({ ...p, business_phone: e.target.value }))} /></label>
+          </section>
+          <section className='dc'>
+            <Title ic={IC.receipt}>Currency and time zone</Title>
+            <label>Display currency
+              <select value={preferences.currency} onChange={(e) => setPreferences((p) => ({ ...p, currency: e.target.value }))}>
+                {CURRENCIES.map((code) => <option key={code} value={code}>{code}</option>)}
+              </select>
+            </label>
+            <p>Currency changes only relabel existing amounts; no exchange-rate conversion is performed.</p>
+            <label>Time zone
+              <select value={preferences.time_zone} onChange={(e) => setPreferences((p) => ({ ...p, time_zone: e.target.value }))}>
+                {!TIME_ZONES.includes(preferences.time_zone) && <option value={preferences.time_zone}>{preferences.time_zone}</option>}
+                {TIME_ZONES.map((zone) => <option key={zone} value={zone}>{zone.replace(/_/g, ' ')}</option>)}
+              </select>
+            </label>
+          </section>
+          <h2 className='settings-heading span3' id='settings-inventory'>Inventory</h2>
+          <section className='dc span3'>
+            <Title ic={IC.box}>Inventory thresholds</Title>
+            <label>Low-stock alert when stock is below target (%)
+              <input type='number' min='1' max='100' step='1' value={Math.round(Number(preferences.low_stock_threshold) * 100)} onChange={(e) => setPreferences((p) => ({ ...p, low_stock_threshold: String(Number(e.target.value) / 100) }))} />
+            </label>
+            <label>Aged-stock threshold (days)
+              <input type='number' min='1' max='3650' step='1' value={preferences.slow_stock_days} onChange={(e) => setPreferences((p) => ({ ...p, slow_stock_days: e.target.value }))} />
+            </label>
+            <label>Supplier lead time (days)
+              <input type='number' min='1' max='365' step='1' value={preferences.reorder_lead_days} onChange={(e) => setPreferences((p) => ({ ...p, reorder_lead_days: e.target.value }))} />
+            </label>
+            <label>Safety stock buffer (days)
+              <input type='number' min='1' max='365' step='1' value={preferences.safety_stock_days} onChange={(e) => setPreferences((p) => ({ ...p, safety_stock_days: e.target.value }))} />
+            </label>
+            <label>Reorder target cover (days)
+              <input type='number' min='1' max='365' step='1' value={preferences.reorder_target_days} onChange={(e) => setPreferences((p) => ({ ...p, reorder_target_days: e.target.value }))} />
+            </label>
+          </section>
+          <h2 className='settings-heading span3' id='settings-notifications'>Notifications</h2>
+          <section className='dc span3'>
+            <Title ic={IC.bulb}>Email alerts</Title>
+            <p>Alerts are sent immediately when a condition is first met. Aged-stock alerts are detected on your next Nexa request after the age threshold.</p>
+            <p>{preferences.email_verified ? `Alerts go to ${accountEmail || 'your verified account email'}.` : `Verify ${accountEmail || 'your account email'} before enabling alerts.`}</p>
+            {!preferences.email_verified && <button type='button' className='btn glass' disabled={settingsBusy} onClick={sendEmailVerification}>Send verification email</button>}
+            {!preferences.email_delivery_configured && <p className='nerr'>Secure email delivery is not configured on this server. Alerts remain unavailable until SMTP is configured.</p>}
+            {[
+              ['notify_low_stock', 'Low stock'],
+              ['notify_slow_stock', 'Aged stock'],
+              ['notify_goal_reached', 'Revenue goal reached'],
+            ].map(([field, label]) => (
+              <label className='ncheck' key={field}>
+                <input type='checkbox' checked={preferences[field]} onChange={(e) => setPreferences((p) => ({ ...p, [field]: e.target.checked }))} />
+                {label}
+              </label>
+            ))}
+          </section>
+          <div className='goal-actions span2'>
+            <button type='submit' className='btn iri nbtn' disabled={settingsBusy || logoBusy}>{settingsBusy ? 'Saving…' : 'Save settings'}</button>
+            {settingsMsg.text && <p className={settingsMsg.error ? 'nerr' : 'nok'} role={settingsMsg.error ? 'alert' : 'status'}>{settingsMsg.text}</p>}
+          </div>
+        </form>
+        <div className='settings-sections'>
+          <h2 className='settings-heading' id='settings-goals'>Goals</h2>
+          <section className='dc'>
+            <Title ic={IC.gross}>Revenue goal</Title>
+            <p>Progress counts only paid sales in the selected period.</p>
+            <form className='nform' onSubmit={saveGoal}>
+              <label>Sales goal ({preferences.currency})
+                <input type='number' min='0' step='0.01' value={goalForm.amount} onChange={(e) => setGoalForm((f) => ({ ...f, amount: e.target.value }))} />
+              </label>
+              <div className='goal-period'>
+                <span>Goal period</span>
+                <div className='nseg' role='group' aria-label='Goal period'>
+                  {GOAL_PERIODS.map(([v, label]) => (
+                    <button key={v} type='button' aria-pressed={goalForm.period === v} onClick={() => setGoalForm((f) => ({ ...f, period: v }))}>{label}</button>
+                  ))}
+                </div>
               </div>
-            </div>
+              <div className='goal-actions'>
+                <button type='submit' className='btn iri nbtn' disabled={goalBusy}>{goalBusy ? 'Saving…' : 'Save goal'}</button>
+                <button type='button' className='btn glass' disabled={goalBusy || !goalData || goalData.revenue_goal == null} onClick={clearGoal}>Clear goal</button>
+              </div>
+            </form>
+            {goalMsg.text && <p className={goalMsg.error ? 'nerr' : 'nok'} role={goalMsg.error ? 'alert' : 'status'}>{goalMsg.text}</p>}
+            {goalData && goalData.progress && (
+              <div className='goal-progress'>
+                <div className='nrow2'>
+                  <span>{preciseMoney(Number(goalData.progress.revenue))} of {preciseMoney(Number(goalData.progress.goal))} {GOAL_WORDS[goalData.progress.period]}</span>
+                  <span>{goalData.progress.percent}%</span>
+                </div>
+                <Bar pct={goalData.progress.percent} />
+                <p>{Number(goalData.progress.remaining) > 0 ? `${preciseMoney(Number(goalData.progress.remaining))} left to reach the goal.` : 'Goal reached.'} Period: {shortDate(goalData.progress.start)} to {shortDate(goalData.progress.end)}.</p>
+              </div>
+            )}
+          </section>
+          <h2 className='settings-heading' id='settings-account'>Account &amp; data</h2>
+          <section className='dc'>
+            <Title ic={IC.settings}>Account and data</Title>
+            <p>CSV export and account deletion require a one-time email confirmation. Deletion permanently removes your account and its associated business data.</p>
             <div className='goal-actions'>
-              <button type='submit' className='btn iri nbtn' disabled={goalBusy}>{goalBusy ? 'Saving…' : 'Save goal'}</button>
-              <button type='button' className='btn glass' disabled={goalBusy || !goalData || goalData.revenue_goal == null} onClick={clearGoal}>Clear goal</button>
+              <button type='button' className='btn glass' disabled={settingsBusy || !preferences.email_verified || !preferences.email_delivery_configured} onClick={() => requestConfirmation('export')}>Request CSV export</button>
+              <button type='button' className='btn glass' disabled={settingsBusy || !preferences.email_verified || !preferences.email_delivery_configured} onClick={() => requestConfirmation('delete')}>Request account deletion</button>
             </div>
-          </form>
-          {goalMsg.text && <p className={goalMsg.error ? 'nerr' : 'nok'} role={goalMsg.error ? 'alert' : 'status'}>{goalMsg.text}</p>}
-          {goalData && goalData.progress && (
-            <div className='goal-progress'>
-              <div className='nrow2'>
-                <span>{preciseMoney(Number(goalData.progress.revenue))} of {preciseMoney(Number(goalData.progress.goal))} {GOAL_WORDS[goalData.progress.period]}</span>
-                <span>{goalData.progress.percent}%</span>
-              </div>
-              <Bar pct={goalData.progress.percent} />
-              <p>{Number(goalData.progress.remaining) > 0 ? `${preciseMoney(Number(goalData.progress.remaining))} left to reach the goal.` : 'Goal reached.'} Period: {shortDate(goalData.progress.start)} to {shortDate(goalData.progress.end)}.</p>
-            </div>
-          )}
-        </section>
-      </div>
+            {(!preferences.email_verified || !preferences.email_delivery_configured) && <p>Verify your account email and configure secure email delivery to use these actions.</p>}
+            {accountMsg.text && <p className={accountMsg.error ? 'nerr' : 'nok'} role={accountMsg.error ? 'alert' : 'status'}>{accountMsg.text}</p>}
+          </section>
+        </div>
+      </>
     ),
 
     sales: () => {
@@ -873,8 +913,8 @@ function Dashboard({ dark, setTheme, onExit }) {
             <div className='nth'><H k='name'>Product</H><span>Category</span><span>Price</span><span>Cost</span><H k='margin'>Margin</H><H k='stock'>Stock</H><H k='sold'>Sold, {m}</H></div>
             {rows.map((r) => (
               <div className='ntr' key={r.n}>
-                <b>{r.n}</b><span>{r.c}</span><span>{money(r.p)}</span><span>{'$' + r.k.toFixed(2)}</span>
-                <span className='ncy'>{r.mg.toFixed(0)}%</span><span className={r.s / r.t < 0.35 ? 'nwarn' : ''}>{r.s}</span><span>{r.sold}</span>
+                <b>{r.n}</b><span>{r.c}</span><span>{money(r.p)}</span><span>{preciseMoney(r.k)}</span>
+                <span className='ncy'>{r.mg.toFixed(0)}%</span><span className={r.s / r.t < Number(preferences.low_stock_threshold) ? 'nwarn' : ''}>{r.s}</span><span>{r.sold}</span>
               </div>
             ))}
           </div></div>
@@ -950,9 +990,9 @@ function Dashboard({ dark, setTheme, onExit }) {
                 </select>
               </label>
               {isNew && <label>New product name<input type='text' value={rf.name} onChange={set('name')} /></label>}
-              {isNew && <label>Selling price (USD)<input type='number' min='0' step='0.01' value={rf.price} onChange={set('price')} /></label>}
+              {isNew && <label>Selling price ({preferences.currency})<input type='number' min='0' step='0.01' value={rf.price} onChange={set('price')} /></label>}
               <label>Quantity received<input type='number' min='1' step='1' value={rf.q} onChange={set('q')} /></label>
-              <label>Unit cost (USD)<input type='number' min='0' step='0.01' value={rf.c} onChange={set('c')} /></label>
+              <label>Unit cost ({preferences.currency})<input type='number' min='0' step='0.01' value={rf.c} onChange={set('c')} /></label>
               <label>Supplier
                 <input type='text' list='supl' value={rf.s} onChange={set('s')} />
                 <datalist id='supl'>{[...new Set(batches.map((b) => b[6]))].map((n) => <option key={n} value={n} />)}</datalist>
@@ -990,7 +1030,7 @@ function Dashboard({ dark, setTheme, onExit }) {
             {recent.map((b) => (
               <div className='npill' key={b[0]}>
                 <span className='nin xs'>{b[1][0]}</span><span>{b[1]} × {b[2]}</span>
-                <span className='nmut'>{b[6]} · {b[4] === 0 ? 'Today' : b[4] + ' days ago'}</span><b>{'$' + b[5].toFixed(2)} each</b>
+                <span className='nmut'>{b[6]} · {b[4] === 0 ? 'Today' : b[4] + ' days ago'}</span><b>{preciseMoney(b[5])} each</b>
               </div>
             ))}
           </section>
@@ -1032,7 +1072,7 @@ function Dashboard({ dark, setTheme, onExit }) {
             <section className='dc span2'>
               <Title ic={NAV.find((x) => x[0] === 'slow')[2]} right={
                 <div className='nseg sm' role='group' aria-label='Too long after how many days'>
-                  {[30, 45, 60, 90].map((d) => <button key={d} aria-pressed={limit === d} onClick={() => setLimit(d)}>{d}d</button>)}
+                  {[30, 45, 60, 90].map((d) => <button key={d} aria-pressed={limit === d} onClick={() => { slowLimitOverridden.current = true; setLimit(d); }}>{d}d</button>)}
                 </div>}>Sitting longer than {limit} days</Title>
               {list.length === 0 && <p>Nothing is sitting too long. Nice work.</p>}
               {list.map((b) => {
@@ -1301,7 +1341,7 @@ function Dashboard({ dark, setTheme, onExit }) {
           </ul>
         </section>
         <section className='dc'>
-          <Title ic={IC.net}>Forecast for {NEXT[m]}</Title>
+          <Title ic={IC.net}>Forecast for {monthName(1)}</Title>
           <div className='nscn' role='group' aria-label='Scenario'>
             {Object.keys(SC).map((s) => <button key={s} aria-pressed={scn === s} onClick={() => setScn(s)}><i>{s[0]}</i><span>{s}</span></button>)}
           </div>
@@ -1322,9 +1362,10 @@ function Dashboard({ dark, setTheme, onExit }) {
 
   return (
     <div className='dash'>
+      <div className='mobile-brand'><BusinessBrand {...businessProfile} /></div>
       <div className='nshell'>
         <nav className='nside' aria-label='Main menu'>
-          <div className='nlogo'><span className='nin sm'><Ico d={IC.gross} s={18} /></span>Nexa</div>
+          <BusinessBrand {...businessProfile} />
           <span className='ngrp'>Menu</span>
           {NAV.map(([id, label, ic], i) => (
             <React.Fragment key={id}>
@@ -1338,7 +1379,7 @@ function Dashboard({ dark, setTheme, onExit }) {
 
         <main className='nmain'>
           <header className='ntop'>
-            <div><h1>{cur[1]}</h1><p>{cur[3]}</p></div>
+            <div><h1>{cur[1]}</h1><p>{preferences.business_name ? `${preferences.business_name} · ${cur[3]}` : cur[3]}</p></div>
             <div className='ntools'>
               {showMonth && <Month />}
               {nav !== 'settings' && <>
@@ -1352,29 +1393,190 @@ function Dashboard({ dark, setTheme, onExit }) {
           <div key={nav} className='nview'>{views[nav]()}</div>
         </main>
       </div>
-      {form && <RecordSheet type={form} onClose={() => setForm(null)} onSave={save} products={prods} />}
+      {form && <RecordSheet type={form} onClose={() => setForm(null)} onSave={save} products={prods} currency={preferences.currency} />}
     </div>
   );
 }
 
-function App() {
+export default function App() {
   const [mode, setMode] = useState(null);
   const [view, setView] = useState('welcome');
+  const [accountChallenge, setAccountChallenge] = useState(null);
+  const [accountConfirmation, setAccountConfirmation] = useState('');
+  const [accountChallengeMessage, setAccountChallengeMessage] = useState({ text: '', error: false });
+  const [accountChallengeBusy, setAccountChallengeBusy] = useState(false);
+  const [passwordResetChallenge, setPasswordResetChallenge] = useState(null);
+  const [passwordResetForm, setPasswordResetForm] = useState({ password: '', password2: '' });
+  const [passwordResetMessage, setPasswordResetMessage] = useState({ text: '', error: false });
+  const [passwordResetBusy, setPasswordResetBusy] = useState(false);
   useEffect(() => { document.body.classList.toggle('inapp', view === 'app'); document.body.classList.toggle('welcome', view === 'welcome'); window.scrollTo(0, 0); }, [view]);
   const [dark, setDark] = useState(false);
   const setTheme = (enabled) => { setDark(enabled); document.documentElement.dataset.theme = enabled ? "dark" : "light"; };
   useEffect(() => {
+    const url = new URL(window.location.href);
+    const hashParams = new URLSearchParams(url.hash.slice(1));
+    const resetToken = hashParams.get('password_reset');
+    const action = url.searchParams.get('account_action') || hashParams.get('account_action');
+    const challengeToken = url.searchParams.get('token') || hashParams.get('token');
+    if (resetToken) {
+      setPasswordResetChallenge({ token: resetToken });
+      url.searchParams.delete('password_reset');
+      url.searchParams.delete('token');
+      url.searchParams.delete('account_action');
+      url.hash = '';
+      window.history.replaceState(null, '', url.pathname + url.search);
+      return;
+    }
+    if (['export', 'delete'].includes(action) && challengeToken) {
+      setAccountChallenge({ action, token: challengeToken });
+      url.searchParams.delete('account_action');
+      url.searchParams.delete('token');
+      url.hash = '';
+      window.history.replaceState(null, '', url.pathname + url.search);
+      return;
+    }
+    if (challengeToken) {
+      verifyMagicLink(challengeToken).then((session) => {
+        localStorage.setItem(TOKEN_KEY, session.token);
+        url.searchParams.delete('token');
+        url.hash = '';
+        window.history.replaceState(null, '', url.pathname + url.search);
+        setView('app');
+      }).catch((error) => {
+        setAccountChallengeMessage({ text: error.message, error: true });
+        url.searchParams.delete('token');
+        url.hash = '';
+        window.history.replaceState(null, '', url.pathname + url.search);
+      });
+      return;
+    }
     const t = localStorage.getItem(TOKEN_KEY);
     if (!t) return;
-    call("/me/", null, t).then(() => setView('app')).catch((e) => { if (!/reach/.test(e.message)) localStorage.removeItem(TOKEN_KEY); });
+    currentUser(t).then(() => setView('app')).catch((e) => { if (!/reach/.test(e.message)) localStorage.removeItem(TOKEN_KEY); });
   }, []);
+  const confirmAccountAction = async (event) => {
+    event.preventDefault();
+    if (!accountChallenge) return;
+    setAccountChallengeBusy(true);
+    setAccountChallengeMessage({ text: '', error: false });
+    try {
+      if (accountChallenge.action === 'export') {
+        const blob = await exportAccountData(accountChallenge.token, accountConfirmation);
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'nexa-account-export.csv';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+        setAccountChallenge(null);
+        setAccountConfirmation('');
+        setAccountChallengeMessage({ text: 'Your CSV export was downloaded.', error: false });
+      } else {
+        const result = await deleteAccount(accountChallenge.token, accountConfirmation);
+        localStorage.removeItem(TOKEN_KEY);
+        setAccountChallenge({ completed: true });
+        setAccountChallengeMessage({ text: result.message, error: false });
+      }
+    } catch (error) {
+      setAccountChallengeMessage({ text: error.message, error: true });
+    } finally {
+      setAccountChallengeBusy(false);
+    }
+  };
+  const submitPasswordReset = async (event) => {
+    event.preventDefault();
+    if (!passwordResetChallenge || passwordResetBusy) return;
+    setPasswordResetMessage({ text: '', error: false });
+    if (passwordResetForm.password !== passwordResetForm.password2) {
+      setPasswordResetMessage({ text: 'The passwords do not match.', error: true });
+      return;
+    }
+    setPasswordResetBusy(true);
+    try {
+      const result = await resetPassword({
+        token: passwordResetChallenge.token,
+        password: passwordResetForm.password,
+        password2: passwordResetForm.password2,
+      });
+      localStorage.removeItem(TOKEN_KEY);
+      setPasswordResetChallenge({ completed: true });
+      setPasswordResetForm({ password: '', password2: '' });
+      setPasswordResetMessage({ text: result.detail, error: false });
+    } catch (error) {
+      setPasswordResetMessage({ text: error.message, error: true });
+    } finally {
+      setPasswordResetBusy(false);
+    }
+  };
   const signOut = () => {
     const t = localStorage.getItem(TOKEN_KEY);
     localStorage.removeItem(TOKEN_KEY);
-    if (t) call("/auth/logout/", {}, t).catch(() => {});
+    if (t) logout(t).catch(() => {});
+    activeCurrency = 'USD';
+    activeTimeZone = 'Africa/Harare';
+    setAccountChallengeMessage({ text: '', error: false });
     setTheme(false); setView('welcome');
   };
-  if (view === 'app') return <Dashboard dark={dark} setTheme={setTheme} onExit={signOut} />;
+  if (accountChallenge && !accountChallenge.completed) return (
+    <div className='landing-page'>
+      <nav><div className='logo'><i />Nexa</div></nav>
+      <main className='hero'>
+        <span className='tag'>Secure account confirmation</span>
+        <h1>{accountChallenge.action === 'delete' ? 'Delete your account?' : 'Download your data?'}</h1>
+        <p className='sub'>
+          {accountChallenge.action === 'delete'
+            ? 'This permanently deletes your Nexa account and associated business data.'
+            : 'This creates a private CSV export of your Nexa business data.'}
+        </p>
+        <form className='nform' onSubmit={confirmAccountAction}>
+          <label>Type {accountChallenge.action.toUpperCase()} to confirm
+            <input autoComplete='off' value={accountConfirmation} onChange={(e) => setAccountConfirmation(e.target.value)} />
+          </label>
+          <button type='submit' className='btn iri' disabled={accountChallengeBusy}>
+            {accountChallengeBusy ? 'Processing…' : accountChallenge.action === 'delete' ? 'Delete account' : 'Download CSV'}
+          </button>
+        </form>
+        {accountChallengeMessage.text && <p className={accountChallengeMessage.error ? 'nerr' : 'nok'} role={accountChallengeMessage.error ? 'alert' : 'status'}>{accountChallengeMessage.text}</p>}
+        <button className='btn glass' onClick={() => { setAccountChallenge(null); setAccountConfirmation(''); }}>Cancel</button>
+      </main>
+    </div>
+  );
+  if (accountChallenge && accountChallenge.completed) return (
+    <div className='landing-page'><main className='hero'><h1>Account deleted</h1><p className='sub'>{accountChallengeMessage.text}</p></main></div>
+  );
+  if (passwordResetChallenge && !passwordResetChallenge.completed) return (
+    <div className='landing-page'>
+      <nav><div className='logo'><i />Nexa</div></nav>
+      <main className='hero'>
+        <span className='tag'>Secure password reset</span>
+        <h1>Choose a new password</h1>
+        <p className='sub'>Your password must meet Nexa's password requirements. Reset links expire after a short time and can only be used once.</p>
+        <form className='nform' onSubmit={submitPasswordReset}>
+          <label>New password
+            <input type='password' autoComplete='new-password' required value={passwordResetForm.password} onChange={(event) => setPasswordResetForm({ ...passwordResetForm, password: event.target.value })} />
+          </label>
+          <label>Re-enter new password
+            <input type='password' autoComplete='new-password' required value={passwordResetForm.password2} onChange={(event) => setPasswordResetForm({ ...passwordResetForm, password2: event.target.value })} />
+          </label>
+          <button type='submit' className='btn iri' disabled={passwordResetBusy}>{passwordResetBusy ? 'Updating…' : 'Set new password'}</button>
+        </form>
+        {passwordResetMessage.text && <p className={passwordResetMessage.error ? 'nerr' : 'nok'} role={passwordResetMessage.error ? 'alert' : 'status'}>{passwordResetMessage.text}</p>}
+        <button className='btn glass' onClick={() => { setPasswordResetChallenge(null); setMode('signin'); }}>Return to sign in</button>
+      </main>
+    </div>
+  );
+  if (passwordResetChallenge && passwordResetChallenge.completed) return (
+    <div className='landing-page'>
+      <main className='hero'>
+        <h1>Password reset complete</h1>
+        <p className='sub'>{passwordResetMessage.text}</p>
+        <button className='btn iri' onClick={() => { setPasswordResetChallenge(null); setMode('signin'); }}>Sign in</button>
+      </main>
+    </div>
+  );
+  if (view === 'app') return <Dashboard setTheme={setTheme} onExit={signOut} />;
   return (
     <>
       <div className="landing-page">
@@ -1383,6 +1585,7 @@ function App() {
           <button className="btn glass" onClick={() => setMode("signin")}>Sign in</button>
         </nav>
         <main className="hero">
+          {accountChallengeMessage.text && <p className={accountChallengeMessage.error ? 'nerr' : 'nok'} role={accountChallengeMessage.error ? 'alert' : 'status'}>{accountChallengeMessage.text}</p>}
           <span className="tag">Business intelligence, reimagined</span>
           <h1>Run your business with <em>foresight</em></h1>
           <p className="sub">Record every sale, purchase and expense in one place. Nexa shows what sells most, how each month is going, and what to do next.</p>
@@ -1399,21 +1602,7 @@ function App() {
         <aside className="float f1" aria-hidden="true"><span>Slow stock flagged after</span><b>45 days</b></aside>
         <aside className="float f2" aria-hidden="true"><span>Next-month forecast</span><b>3 scenarios</b></aside>
       </div>
-      {mode && <Sheet mode={mode} onClose={() => setMode(null)} onEnter={() => { setMode(null); setView('app'); }} onSwitch={setMode} />}
+      {mode && <AuthSheet mode={mode} onClose={() => setMode(null)} onEnter={() => { setMode(null); setView('app'); }} onSwitch={setMode} />}
     </>
   );
-}
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-
-/* Original orb: gentle pointer parallax, paused for reduced motion. */
-const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const video = document.getElementById("orb");
-if (reduce) { video.removeAttribute("autoplay"); video.pause(); }
-else {
-  const p = video.play(); if (p && p.catch) p.catch(() => {});
-  addEventListener("pointermove", (e) => {
-    const r = document.documentElement.style;
-    r.setProperty("--px", ((e.clientX / innerWidth - .5) * 28) + "px");
-    r.setProperty("--py", ((e.clientY / innerHeight - .5) * 20) + "px");
-  });
 }

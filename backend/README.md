@@ -39,6 +39,11 @@ the original token; after an interrupted response, sign in instead. Passwords ar
 profile and financial fields are not encrypted individually. Production deployments must configure
 HTTPS, protected email delivery and encryption at rest for the database, backups and media.
 
+Password reset requests return the same response for known and unknown valid email addresses.
+Reset tokens are stored as hashes, expire after 30 minutes by default, and can only be used once.
+The new password uses Django's configured validators, and resetting it revokes all existing API tokens.
+Requests are limited to three per email address and 20 per IP address per hour.
+
 ## Endpoints (all under `/api/`)
 
 | Method | Path | Purpose |
@@ -47,6 +52,8 @@ HTTPS, protected email delivery and encryption at rest for the database, backups
 | POST | `auth/login/` `{username, password}` | Sign in with a username and password |
 | POST | `auth/request-link/` `{email}` | Email a sign-in link |
 | POST | `auth/verify/` `{token}` | Exchange link token for an API token |
+| POST | `auth/password-reset/` `{email}` | Request a password reset link (non-enumerating response) |
+| POST | `auth/password-reset/confirm/` `{token, password, password2}` | Set a new password and revoke existing API tokens |
 | POST | `auth/logout/` | Revoke the current token |
 | GET | `me/` | Current user: `{id, username, email, is_staff}`. The dashboard shows an **Admin** button (a link to `/admin/`) only when `is_staff` is true |
 | GET, POST | `products/` | List (`?q=`) / create `{name, price, cost, category, target_stock, supplier}` |
@@ -58,7 +65,7 @@ HTTPS, protected email delivery and encryption at rest for the database, backups
 | PATCH | `sales/<id>/` `{status}` | Mark paid / pending |
 | GET, POST | `expenses/` | List (`?month=2026-10`, with category totals) / record `{category, amount}` |
 | GET | `stock/` | Products with stock level and low-stock flag |
-| GET | `batches/` | Batches in stock (`?slow&min_age=45` for slow stock) |
+| GET | `batches/` | Batches in stock (`?slow&min_age=<days>` for slow stock; defaults to the owner's configured threshold) |
 | GET, POST | `purchases/` | List / reorder `{product_id, quantity?, unit_cost?}` |
 | POST | `purchases/<id>/receive/` | Receive an order into stock |
 | POST | `receive/` | Receive stock `{product_id \| new_product_name+price, quantity, unit_cost, supplier, image?}`; a new-product name matching an existing product adds stock to that product. `image` is an optional data URL (PNG, JPEG, WebP or GIF, 1 MB max) |
@@ -67,8 +74,27 @@ HTTPS, protected email delivery and encryption at rest for the database, backups
 | GET | `insights/` | Generated recommendations |
 | POST | `assistant/chat/` `{question, month?}` | Ask about verified, aggregated financial data |
 | POST | `assistant/analyze/` `{analysis, month?}` | Deterministic analysis: `profitability`, `sales_trends`, `expense_analysis`, `product_rankings`, `stock_cover`, `reorder_planning`, `aging_inventory`, `break_even`, `customer_concentration`, or `cash_indicators`. See [algorithm details](../docs/APP_DOCUMENTATION.md#algorithm-analyses) for assumptions and limitations. |
-| GET, PATCH | `settings/` `{revenue_goal?, goal_period?}` | Revenue goal (`day`, `week`, `month`, or `year`); `null` clears it. Returns the goal and its progress for the current period |
+| GET, PATCH | `settings/` | Owner preferences: goal, theme, display currency, time zone, business profile, stock/reorder thresholds, and email alert preferences. Currency changes require `confirm_currency_change: true` and never convert recorded amounts. |
 | GET | `settings/series/` | Overview chart buckets for the goal period: `{period, target, current, buckets}` (each bucket has `start`, `end`, `amount`), or `null` without a goal. Counts every sale, with no row limit |
+| POST | `settings/verify-email/` | Send a verification/sign-in link to the current account email |
+| POST | `account/confirm/` `{action: "export" \| "delete"}` | Send a short-lived, one-use email confirmation link |
+| POST | `account/export/` `{token, confirmation: "EXPORT"}` | Download an owner-scoped CSV; no authenticated API token is needed because the email token is the re-authentication |
+| POST | `account/delete/` `{token, confirmation: "DELETE"}` | Permanently delete the account and its associated data after email re-authentication |
+
+Settings are private to each owner. Set `business_name` and optionally `business_logo` (a PNG, JPEG, WebP or GIF data URL of up to 1 MB) through `PATCH /api/settings/`; set `business_logo` to `""` to remove it. The response includes `business_logo_url`. As with product photos, logo images are served through a public, unguessable image URL; do not upload sensitive images. The logo is stored in the configured media storage and deleted when replaced, removed, or the account is deleted. CSV exports do not include image files. Currency changes only change the display label and do not convert stored amounts. Inventory thresholds affect stock warnings and reorder/aging analyses. Email alerts are opt-in, require a verified account email and secure SMTP configuration, and are deduplicated until the triggering condition is resolved. Aged-stock alerts are checked on app requests; this deployment has no scheduler.
+
+Logo framing is saved with the business settings: `business_logo_zoom` is an integer from 100 to 300 percent, and `business_logo_x` and `business_logo_y` are integer offsets from -100 to 100 percent of the frame. Positive offsets move the image right and down. These adjustments apply to both desktop and mobile without altering the stored image.
+
+Nonempty company names and logos must be unique across accounts. Name matching ignores case, Unicode compatibility differences, and repeated whitespace; logo matching compares the rendered image, not visually similar or edited images. A conflict returns HTTP 409 with an error message. This does not verify company ownership. Before applying migration `0013`, ensure existing company names and rendered logos are unique and stored logo files are accessible; the migration stops without deleting data if they are not.
+
+## Scalability foundations
+
+- Set `NEXA_REDIS_URL` to a shared `redis://` or `rediss://` service to move the cache and rate-limit counters out of the database. Leave it unset for the existing database cache. Protect Redis with network access controls and TLS where appropriate; a Redis outage is not silently replaced by a process-local cache.
+- Set `NEXA_MEDIA_STORAGE=r2`, `NEXA_R2_ENDPOINT` (the HTTPS account endpoint), `NEXA_R2_BUCKET`, `NEXA_R2_ACCESS_KEY_ID` and `NEXA_R2_SECRET_ACCESS_KEY` to use a private Cloudflare R2 bucket. Keep credentials in protected environment variables. Leave storage unset for local `NEXA_MEDIA_ROOT`. Existing local images must be copied with their `products/<key>/<size>.webp` paths intact and verified before switching; migration `0013` still needs its existing local logo files when applied to an older database. The image API remains public through unguessable URLs. Remote storage failures are reported; image cleanup needs operational monitoring.
+- After applying migrations, set `NEXA_ASYNC_ALERTS=1` and run `python manage.py run_alert_worker` as a separate continuously supervised process. Each instance must use the same PostgreSQL database and email configuration. The queue is stored in the database, not Redis. Failed sends retry with backoff; a crash after provider acceptance can cause a duplicate. Queue creation and notification state update are atomic, but alert detection still occurs on application requests after the triggering business transaction. Monitor worker health, queue age, and errors; without a worker, alerts remain queued. Login, password-reset, and account confirmation emails still run in requests. Use PostgreSQL for multiple workers; SQLite does not provide equivalent row locking.
+- `/api/health/live/` is a liveness probe; `/api/health/ready/` checks the database and configured cache and returns 503 when they cannot be reached. Limit public probe traffic at the edge.
+
+These are application foundations, not a finished multi-instance deployment. The existing Render blueprint still uses a single-instance disk and runs migrations on startup. Do not scale it horizontally until shared storage, Redis, worker deployment, one-time migrations, backups, and monitoring are configured and tested. No capacity target is established without representative load tests.
 
 Notes: money values are returned as strings with two decimal places, including zero totals (`"0.00"`). A sale linked to a product takes stock from the oldest
 batch first and uses the real batch cost for cost of goods; unlinked sales use a 60% cost estimate.
@@ -85,8 +111,25 @@ Unexpected server errors return `{"error": ...}` with status 500 and are logged 
 `NEXA_CORS_ORIGINS` (default allows `null`, i.e. the page opened from `file://`, and localhost dev ports),
 `NEXA_CORS_ALLOW_LOCAL_DEV` (default on in debug: any `localhost` or `127.0.0.1` port may call the API),
 `NEXA_SERVE_FRONTEND` (default on in debug: serves `frontend/Nexa.html` at `/`),
-`NEXA_FRONTEND_URL` (base of the magic link), `NEXA_EMAIL_BACKEND`, `NEXA_FROM_EMAIL`,
+`NEXA_FRONTEND_URL` (base of the magic link), `NEXA_EMAIL_BACKEND` (console in debug; SMTP in production),
+`NEXA_EMAIL_HOST`, `NEXA_EMAIL_PORT` (587 by default; 465 with SSL), `NEXA_EMAIL_USER`,
+`NEXA_EMAIL_PASSWORD`, `NEXA_EMAIL_USE_TLS` (on by default in production),
+`NEXA_EMAIL_USE_SSL` (off by default; do not enable together with TLS), `NEXA_FROM_EMAIL`,
+`NEXA_PASSWORD_RESET_MINUTES` (30 by default; allowed range 5–120),
 `NEXA_DATABASE_URL` (PostgreSQL URL; SQLite `db.sqlite3` is used when unset), `NEXA_MEDIA_ROOT` (folder for product photos; default `media/` in the backend folder).
+
+Neon CLI writes its PostgreSQL connection string as `DATABASE_URL` in `.env.local`; Django does
+not load that file automatically. Configure the same value as `NEXA_DATABASE_URL` in the hosting
+provider's secret environment settings. Do not commit the file or print the connection string.
+Connecting a new database does not transfer existing SQLite accounts or data; back up and migrate
+them separately before switching. Neon Auth does not replace Nexa's existing authentication.
+
+For local testing with a migrated Neon database and images kept on this computer, run
+`python start_neon_local.py` from `backend`. It uses `DATABASE_URL` from the root `.env.local`
+and serves the local `backend/media` folder, without changing your SQLite database. Changes made
+to either database are not synchronized to the other. Stop the ordinary local server first.
+This development server is not a public deployment; local images still need to be copied to
+shared storage before deploying.
 
 The assistant requires `NEXA_AI_API_KEY` (a Google Gemini API key). `NEXA_AI_MODEL` defaults to `gemini-3.8-flash`, and `NEXA_AI_BASE_URL` defaults to Google's OpenAI-compatible endpoint.
 Keep the key in the server environment and never in frontend code. The assistant sends the user's
@@ -117,7 +160,7 @@ category comparisons, and product revenue rankings.
   ```
 
 - Add `api.Nexa-app.com` as a custom domain in Render, then add the CNAME record it shows at your DNS provider.
-- Sign-in links are printed to the Render logs until `NEXA_EMAIL_BACKEND` and SMTP settings are configured. Password sign-in works without email.
+- Configure SMTP credentials with Render secrets before enabling email verification or alerts. Production defaults to SMTP, never console logging; email-dependent features return an explicit error if delivery is unavailable. Password sign-in works without email.
 
 **Frontend (Cloudflare Pages)**
 

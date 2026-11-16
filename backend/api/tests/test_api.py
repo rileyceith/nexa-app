@@ -1,14 +1,18 @@
 import base64
+import csv
 import gzip
 import importlib
 import io
 import json
+import os
 import re
+import runpy
 import shutil
 import tempfile
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.apps import apps
@@ -16,16 +20,18 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache, caches
 from django.core.cache.backends.db import DatabaseCache
 from django.core import mail
-from django.db import IntegrityError, connection, transaction
+from django.core.management import call_command
+from django.db import IntegrityError, OperationalError, connection, transaction
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from PIL import Image
 from urllib.error import HTTPError
 
-from . import assistant as ai
-from . import models as m
-from . import services as svc
+from api import assistant as ai
+from api import images
+from api import models as m
+from api import services as svc
 
 
 def data_url(mime, raw):
@@ -54,6 +60,8 @@ class ApiTests(TestCase):
         self.h = {"HTTP_AUTHORIZATION": "Bearer " + svc.issue_token(self.user)}
         self.other = get_user_model().objects.create(username="b@x.com", email="b@x.com")
         self.other_h = {"HTTP_AUTHORIZATION": "Bearer " + svc.issue_token(self.other)}
+        m.UserSettings.objects.create(owner=self.user)
+        m.UserSettings.objects.create(owner=self.other)
 
     def post(self, url, data, headers=None):
         return self.client.post(url, data, content_type="application/json", **(headers or self.h))
@@ -79,7 +87,20 @@ class ApiTests(TestCase):
     def test_requires_auth(self):
         self.assertEqual(self.client.get("/api/products/").status_code, 401)
 
-    def test_magic_link_flow_and_single_use(self):
+    def test_health_checks_report_dependency_failure_without_details(self):
+        live = self.client.get("/api/health/live/")
+        self.assertEqual((live.status_code, live.json()), (200, {"status": "ok"}))
+        ready = self.client.get("/api/health/ready/")
+        self.assertEqual((ready.status_code, ready.json()), (200, {"status": "ready"}))
+        self.assertEqual(ready["Cache-Control"], "no-store")
+        with patch("api.views.cache.get", side_effect=OperationalError("private diagnostic")):
+            response = self.client.get("/api/health/ready/")
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("private diagnostic", response.content.decode())
+        self.assertEqual(self.client.post("/api/health/ready/").status_code, 405)
+
+    @patch("api.services.email_delivery_configured", return_value=True)
+    def test_magic_link_flow_and_single_use(self, email_configured):
         self.assertEqual(self.post("/api/auth/request-link/", {"email": "new@x.com"}, {}).status_code, 200)
         token = re.search(r"token=([\w-]+)", mail.outbox[0].body).group(1)
         r = self.post("/api/auth/verify/", {"token": token}, {})
@@ -90,6 +111,94 @@ class ApiTests(TestCase):
 
     def test_invalid_email_rejected(self):
         self.assertEqual(self.post("/api/auth/request-link/", {"email": "nope"}, {}).status_code, 400)
+
+    def test_magic_links_never_fall_back_to_console_in_production(self):
+        with override_settings(DEBUG=False, EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend"):
+            response = self.post("/api/auth/request-link/", {"email": "new@example.com"}, {})
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(m.MagicLink.objects.filter(email="new@example.com").exists())
+
+    @patch("api.services.email_delivery_configured", return_value=True)
+    def test_password_reset_request_is_generic_and_emails_only_existing_accounts(self, email_configured):
+        response = self.post("/api/auth/password-reset/", {"email": self.user.email}, {})
+        unknown = self.post("/api/auth/password-reset/", {"email": "unknown@example.com"}, {})
+        detail = "If an account exists for that email, password reset instructions will be sent."
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(unknown.status_code, 200)
+        self.assertEqual(response.json()["detail"], detail)
+        self.assertEqual(unknown.json()["detail"], detail)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.user.email])
+        token = re.search(r"password_reset=([\w-]+)", mail.outbox[0].body).group(1)
+        reset_token = m.PasswordResetToken.objects.get(owner=self.user)
+        self.assertNotEqual(reset_token.token_hash, token)
+        self.assertEqual(reset_token.token_hash, svc._hash(token))
+
+    @patch("api.services.email_delivery_configured", return_value=False)
+    def test_password_reset_request_stays_generic_without_secure_email(self, email_configured):
+        response = self.post("/api/auth/password-reset/", {"email": self.user.email}, {})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), self.post(
+            "/api/auth/password-reset/", {"email": "unknown@example.com"}, {},
+        ).json())
+        self.assertFalse(m.PasswordResetToken.objects.exists())
+
+    @patch("api.services.email_delivery_configured", return_value=True)
+    def test_password_reset_requests_are_rate_limited_and_delivery_failures_stay_generic(self, email_configured):
+        for _ in range(4):
+            response = self.post("/api/auth/password-reset/", {"email": self.user.email}, {})
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 3)
+
+        with patch("api.services.send_mail", side_effect=OSError("mail unavailable")):
+            response = self.post("/api/auth/password-reset/", {"email": self.other.email}, {})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(m.PasswordResetToken.objects.filter(owner=self.other).exists())
+
+    def test_password_reset_validates_policy_then_revokes_sessions_and_is_single_use(self):
+        raw_token = "one-time-password-reset-token"
+        second_session = svc.issue_token(self.user)
+        reset_token = m.PasswordResetToken.objects.create(
+            owner=self.user, token_hash=svc._hash(raw_token), expires_at=timezone.now() + timedelta(minutes=30),
+        )
+        response = self.post("/api/auth/password-reset/confirm/", {
+            "token": raw_token, "password": "short", "password2": "short",
+        }, {})
+        self.assertEqual(response.status_code, 400)
+        reset_token.refresh_from_db()
+        self.assertIsNone(reset_token.used_at)
+
+        password = "Y3llow!Skies_90"
+        response = self.post("/api/auth/password-reset/confirm/", {
+            "token": raw_token, "password": password, "password2": password,
+        }, {})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(get_user_model().objects.get(pk=self.user.pk).check_password(password))
+        self.assertIsNone(svc.user_from_token(self.h["HTTP_AUTHORIZATION"][7:]))
+        self.assertIsNone(svc.user_from_token(second_session))
+        self.assertTrue(svc.user_from_token(self.other_h["HTTP_AUTHORIZATION"][7:]))
+        reset_token.refresh_from_db()
+        self.assertIsNotNone(reset_token.used_at)
+        self.assertEqual(self.post("/api/auth/password-reset/confirm/", {
+            "token": raw_token, "password": password, "password2": password,
+        }, {}).status_code, 400)
+
+    def test_password_reset_rejects_mismatched_and_expired_tokens(self):
+        raw_token = "another-password-reset-token"
+        reset_token = m.PasswordResetToken.objects.create(
+            owner=self.user, token_hash=svc._hash(raw_token), expires_at=timezone.now() + timedelta(minutes=30),
+        )
+        mismatch = self.post("/api/auth/password-reset/confirm/", {
+            "token": raw_token, "password": "Y3llow!Skies_90", "password2": "different",
+        }, {})
+        self.assertEqual(mismatch.status_code, 400)
+        reset_token.refresh_from_db()
+        self.assertIsNone(reset_token.used_at)
+        m.PasswordResetToken.objects.filter(pk=reset_token.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
+        expired = self.post("/api/auth/password-reset/confirm/", {
+            "token": raw_token, "password": "Y3llow!Skies_90", "password2": "Y3llow!Skies_90",
+        }, {})
+        self.assertEqual(expired.status_code, 400)
 
     def test_register_and_login(self):
         body = {"username": "riley", "email": "Riley@example.com", "password": "Str0ng-pass-92", "password2": "Str0ng-pass-92", "accepted_terms": True}
@@ -148,7 +257,8 @@ class ApiTests(TestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             User.objects.create(username="A@X.COM", email="unique@example.com")
 
-    def test_magic_link_signs_into_existing_email_account(self):
+    @patch("api.services.email_delivery_configured", return_value=True)
+    def test_magic_link_signs_into_existing_email_account(self, email_configured):
         body = {"username": "sam", "email": "sam@example.com", "password": "Str0ng-pass-92", "password2": "Str0ng-pass-92", "accepted_terms": True}
         registration = self.post("/api/auth/register/", body, {}).json()
         owner_headers = {"HTTP_AUTHORIZATION": "Bearer " + registration["token"]}
@@ -163,7 +273,8 @@ class ApiTests(TestCase):
         self.assertEqual(get_user_model().objects.filter(email="sam@example.com").count(), 1)
         self.assertEqual(self.client.get("/api/products/", **self.other_h).json(), [])
 
-    def test_magic_link_does_not_use_another_users_matching_username(self):
+    @patch("api.services.email_delivery_configured", return_value=True)
+    def test_magic_link_does_not_use_another_users_matching_username(self, email_configured):
         User = get_user_model()
         unrelated = User.objects.create(username="new@example.com", email="different@example.com")
         self.post("/api/auth/request-link/", {"email": "new@example.com"}, {})
@@ -173,7 +284,8 @@ class ApiTests(TestCase):
         self.assertNotEqual(response.json()["user"]["id"], unrelated.id)
         self.assertTrue(m.UserSettings.objects.filter(owner_id=response.json()["user"]["id"]).exists())
 
-    def test_magic_link_initialization_failure_does_not_consume_link(self):
+    @patch("api.services.email_delivery_configured", return_value=True)
+    def test_magic_link_initialization_failure_does_not_consume_link(self, email_configured):
         self.post("/api/auth/request-link/", {"email": "new@example.com"}, {})
         token = re.search(r"token=([\w-]+)", mail.outbox[-1].body).group(1)
         with patch("api.services.initialize_business_data", side_effect=RuntimeError("setup failed")):
@@ -559,7 +671,7 @@ class ApiTests(TestCase):
     def test_frontend_assets_are_served_by_django(self):
         for path, content_type, marker in (
             ("/Nexa.css", "text/css; charset=utf-8", b"--bg:"),
-            ("/Nexa.js", "application/javascript; charset=utf-8", b"ReactDOM.createRoot"),
+            ("/Nexa.js", "application/javascript; charset=utf-8", b"createRoot"),
         ):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200)
@@ -590,14 +702,14 @@ class ApiTests(TestCase):
         self.assertEqual(self.post("/api/assistant/chat/", {"question": "How am I doing?", "month": "Nov"}).status_code, 400)
         self.assertEqual(self.post("/api/assistant/chat/", {"question": "x" * 5000}).status_code, 413)
 
-    @patch("api.assistant.generate_answer", return_value="Steady.")
+    @patch("api.insights.assistant.generate_answer", return_value="Steady.")
     def test_assistant_rate_limit_persists_in_database_cache(self, _):
         self.assertIsInstance(caches["default"], DatabaseCache)
         for _ in range(10):
             self.assertEqual(self.post("/api/assistant/chat/", {"question": "How am I doing?"}).status_code, 200)
         self.assertEqual(self.post("/api/assistant/chat/", {"question": "How am I doing?"}).status_code, 429)
 
-    @patch("api.assistant.generate_answer", return_value="Revenue was $120.")
+    @patch("api.insights.assistant.generate_answer", return_value="Revenue was $120.")
     def test_assistant_uses_only_requesting_owners_aggregated_financial_context(self, generate_answer):
         self.post("/api/sales/", {"amount": "100", "customer": "Private customer"})
         product = self.product(name="Private product", category="Footwear")
@@ -632,7 +744,7 @@ class ApiTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["error"], "The AI assistant is not configured yet.")
 
-    @patch("api.assistant.generate_answer", return_value="Try tracking weekly costs.")
+    @patch("api.insights.assistant.generate_answer", return_value="Try tracking weekly costs.")
     def test_assistant_rate_limits_repeated_requests(self, generate_answer):
         body = {"question": "What should I focus on?"}
         responses = [self.post("/api/assistant/chat/", body) for _ in range(11)]
@@ -641,7 +753,7 @@ class ApiTests(TestCase):
         self.assertEqual(generate_answer.call_count, 10)
 
     @override_settings(NEXA_AI_API_KEY="server-only-key", NEXA_AI_MODEL="test-model")
-    @patch("api.assistant.urlopen")
+    @patch("api.insights.assistant.urlopen")
     def test_assistant_provider_uses_server_key_and_parses_response(self, urlopen):
         urlopen.return_value.__enter__.return_value.read.return_value = (
             b'{"choices":[{"message":{"content":"A grounded answer."}}]}'
@@ -659,7 +771,7 @@ class ApiTests(TestCase):
         self.assertEqual(json.loads(request.data)["model"], "test-model")
 
     @override_settings(NEXA_AI_API_KEY="server-only-key")
-    @patch("api.assistant.urlopen", side_effect=HTTPError("https://generativelanguage.googleapis.com", 429, "busy", {}, None))
+    @patch("api.insights.assistant.urlopen", side_effect=HTTPError("https://generativelanguage.googleapis.com", 429, "busy", {}, None))
     def test_assistant_provider_errors_are_sanitized(self, _urlopen):
         with self.assertRaises(svc.ServiceError) as error:
             ai.generate_answer("Question", {"period": "2026-10"})
@@ -668,7 +780,7 @@ class ApiTests(TestCase):
         self.assertNotIn("server-only-key", error.exception.message)
 
     @override_settings(NEXA_AI_API_KEY="server-only-key")
-    @patch("api.assistant.urlopen")
+    @patch("api.insights.assistant.urlopen")
     def test_assistant_provider_rejects_responses_without_answer_text(self, urlopen):
         urlopen.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":null}}]}'
         with self.assertRaises(svc.ServiceError) as error:
@@ -698,7 +810,7 @@ class ApiTests(TestCase):
         self.assertIsNone(profitability["metrics"][3]["value"])
         self.assertIsNone(profitability["metrics"][6]["value"])
 
-    @patch("api.algorithms.timezone.localdate", return_value=date(2026, 11, 10))
+    @patch("api.insights.algorithms.timezone.localdate", return_value=date(2026, 11, 10))
     def test_new_analyses_calculate_values_and_preserve_owner_isolation(self, today):
         product = m.Product.objects.create(owner=self.user, name="Widget", price="20", cost="5")
         foreign = m.Product.objects.create(owner=self.other, name="Other stock", price="20", cost="5")
@@ -734,7 +846,7 @@ class ApiTests(TestCase):
         cash = report("cash_indicators")
         self.assertEqual([x["value"] for x in cash["metrics"]], ["300.00", "80.00", "220.00", "100.00"])
 
-    @patch("api.algorithms.timezone.localdate", return_value=date(2026, 11, 10))
+    @patch("api.insights.algorithms.timezone.localdate", return_value=date(2026, 11, 10))
     def test_reorder_future_no_demand_and_orders_cover_threshold(self, today):
         product = m.Product.objects.create(owner=self.user, name="Widget", price="20", cost="5")
         m.Sale.objects.create(owner=self.user, product=product, quantity=10, amount="100", date=date(2026, 11, 1))
@@ -885,11 +997,413 @@ class ApiTests(TestCase):
         self.assertEqual(svc.goal_bounds("year", today), (date(2026, 1, 1), date(2026, 12, 31)))
 
     def test_revenue_goal_defaults_and_is_per_owner(self):
-        self.assertEqual(self.client.get("/api/settings/", **self.h).json(),
-                         {"revenue_goal": None, "goal_period": "month", "progress": None})
+        settings_response = self.client.get("/api/settings/", **self.h).json()
+        self.assertEqual(
+            (settings_response["revenue_goal"], settings_response["goal_period"], settings_response["progress"]),
+            (None, "month", None),
+        )
+        self.assertEqual(settings_response["currency"], "USD")
+        self.assertEqual(settings_response["theme"], "light")
         self.client.patch("/api/settings/", json.dumps({"revenue_goal": "900"}),
                           content_type="application/json", **self.h)
         self.assertIsNone(self.client.get("/api/settings/", **self.other_h).json()["revenue_goal"])
+
+    def test_settings_validate_and_persist_preferences_per_owner(self):
+        def save(body):
+            return self.client.patch(
+                "/api/settings/", json.dumps(body), content_type="application/json", **self.h,
+            )
+
+        self.assertEqual(save({"low_stock_threshold": "1.1"}).status_code, 400)
+        self.assertEqual(save({"currency": "EUR"}).status_code, 400)
+        saved = save({
+            "theme": "dark", "currency": "EUR", "confirm_currency_change": True,
+            "time_zone": "UTC", "business_name": "North Shop", "low_stock_threshold": "0.5",
+            "slow_stock_days": 60, "reorder_lead_days": 10, "safety_stock_days": 5,
+            "reorder_target_days": 24,
+        })
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["currency"], "EUR")
+        self.assertEqual(saved.json()["theme"], "dark")
+        self.assertEqual(saved.json()["time_zone"], "UTC")
+        self.assertEqual(saved.json()["business_name"], "North Shop")
+        self.assertEqual(Decimal(saved.json()["low_stock_threshold"]), Decimal("0.500"))
+        other = self.client.get("/api/settings/", **self.other_h).json()
+        self.assertEqual(other["currency"], "USD")
+        self.assertEqual(other["time_zone"], "Africa/Harare")
+
+    def test_business_logo_upload_replace_remove_and_owner_isolation(self):
+        def save(body):
+            with self.captureOnCommitCallbacks(execute=True):
+                return self.client.patch("/api/settings/", json.dumps(body), content_type="application/json", **self.h)
+
+        response = save({"business_name": "North Shop", "business_logo": PNG_URL})
+        self.assertEqual(response.status_code, 200)
+        first_url = response.json()["business_logo_url"]
+        self.assertEqual(response.json()["business_name"], "North Shop")
+        self.assertEqual(self.image_status(first_url), 200)
+        self.assertEqual(self.client.get("/api/settings/", **self.h).json()["business_logo_url"], first_url)
+        self.assertEqual(self.client.get("/api/settings/", **self.other_h).json()["business_logo_url"], "")
+
+        invalid = save({"business_name": "Wrong", "business_logo": "data:image/png;base64,invalid!"})
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(self.client.get("/api/settings/", **self.h).json()["business_name"], "North Shop")
+        self.assertEqual(self.image_status(first_url), 200)
+
+        response = save({"business_logo": JPEG_URL})
+        second_url = response.json()["business_logo_url"]
+        self.assertNotEqual(first_url, second_url)
+        self.assertEqual(self.image_status(first_url), 404)
+        self.assertEqual(self.image_status(second_url), 200)
+        self.assertEqual(save({"business_logo": ""}).json()["business_logo_url"], "")
+        self.assertEqual(self.image_status(second_url), 404)
+
+    @override_settings(STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    })
+    def test_company_logo_uses_configured_nonfilesystem_storage(self):
+        from django.core.files.storage import default_storage
+
+        with self.captureOnCommitCallbacks(execute=True):
+            uploaded = self.client.patch(
+                "/api/settings/", json.dumps({"business_logo": PNG_URL}), content_type="application/json", **self.h,
+            )
+        self.assertEqual(uploaded.status_code, 200)
+        url = uploaded.json()["business_logo_url"]
+        key = m.UserSettings.objects.get(owner=self.user).business_logo_key
+        self.assertTrue(default_storage.exists(f"products/{key}/400.webp"))
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(b"".join(response.streaming_content))
+        response.close()
+        with self.captureOnCommitCallbacks(execute=True):
+            removed = self.client.patch(
+                "/api/settings/", json.dumps({"business_logo": ""}), content_type="application/json", **self.h,
+            )
+        self.assertEqual(removed.status_code, 200)
+        self.assertFalse(default_storage.exists(f"products/{key}/400.webp"))
+        self.assertEqual(self.image_status(url), 404)
+
+    def test_partial_image_write_is_cleaned_up(self):
+        names = []
+
+        def save(name, content):
+            if names:
+                raise OSError("storage unavailable")
+            names.append(name)
+            return name
+
+        with patch("api.images.default_storage") as storage:
+            storage.save.side_effect = save
+            with self.assertRaisesRegex(OSError, "storage unavailable"):
+                images.save({120: b"first", 400: b"second"})
+            storage.delete.assert_called_once_with(names[0])
+
+    def test_scalability_storage_and_cache_configuration(self):
+        settings_file = Path(__file__).resolve().parents[2] / "nexa" / "settings.py"
+        environment = {
+            "NEXA_MEDIA_STORAGE": "r2",
+            "NEXA_R2_BUCKET": "test-bucket",
+            "NEXA_R2_ENDPOINT": "https://example.r2.cloudflarestorage.com",
+            "NEXA_R2_ACCESS_KEY_ID": "test-key",
+            "NEXA_R2_SECRET_ACCESS_KEY": "test-secret",
+            "NEXA_REDIS_URL": "redis://localhost:6379/0",
+        }
+        with patch.dict(os.environ, environment):
+            settings_data = runpy.run_path(str(settings_file))
+            self.assertEqual(settings_data["STORAGES"]["default"]["BACKEND"], "storages.backends.s3.S3Storage")
+            self.assertEqual(settings_data["CACHES"]["default"]["BACKEND"], "django.core.cache.backends.redis.RedisCache")
+            with patch.dict(os.environ, {"NEXA_R2_ENDPOINT": "http://example.test"}):
+                with self.assertRaisesRegex(RuntimeError, "HTTPS origin"):
+                    runpy.run_path(str(settings_file))
+            with patch.dict(os.environ, {"NEXA_REDIS_URL": "http://example.test"}):
+                with self.assertRaisesRegex(RuntimeError, "NEXA_REDIS_URL"):
+                    runpy.run_path(str(settings_file))
+
+    def test_logo_framing_is_saved_per_account_and_validated(self):
+        def save(body):
+            return self.client.patch("/api/settings/", json.dumps(body), content_type="application/json", **self.h)
+
+        defaults = self.client.get("/api/settings/", **self.h).json()
+        self.assertEqual(
+            (defaults["business_logo_zoom"], defaults["business_logo_x"], defaults["business_logo_y"]),
+            (100, 0, 0),
+        )
+        values = {"business_logo_zoom": 300, "business_logo_x": -100, "business_logo_y": 100}
+        self.assertEqual(save(values).status_code, 200)
+        persisted = self.client.get("/api/settings/", **self.h).json()
+        self.assertEqual({field: persisted[field] for field in values}, values)
+        other = self.client.get("/api/settings/", **self.other_h).json()
+        self.assertEqual((other["business_logo_zoom"], other["business_logo_x"], other["business_logo_y"]), (100, 0, 0))
+        for field, value in (
+            ("business_logo_zoom", 99), ("business_logo_zoom", 301), ("business_logo_x", -101),
+            ("business_logo_y", 101), ("business_logo_y", 1.5), ("business_logo_x", True),
+            ("business_logo_zoom", "100"),
+        ):
+            with self.subTest(field=field, value=value):
+                self.assertEqual(save({field: value, "business_name": "Must not save"}).status_code, 400)
+        persisted = self.client.get("/api/settings/", **self.h).json()
+        self.assertEqual({field: persisted[field] for field in values}, values)
+        self.assertEqual(persisted["business_name"], "")
+
+    def test_company_names_are_unique_across_accounts_and_released_on_change(self):
+        def save(body, headers):
+            return self.client.patch("/api/settings/", json.dumps(body), content_type="application/json", **headers)
+
+        self.assertEqual(save({"business_name": "North Shop"}, self.h).status_code, 200)
+        duplicate = save({"business_name": "  NORTH   shop "}, self.other_h)
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertIn("company name is already in use", duplicate.json()["error"])
+        self.assertEqual(self.client.get("/api/settings/", **self.other_h).json()["business_name"], "")
+        fingerprint = m.UserSettings.objects.get(owner=self.user).business_name_fingerprint
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            m.UserSettings.objects.filter(owner=self.other).update(business_name_fingerprint=fingerprint)
+        self.assertEqual(save({"business_name": " north shop "}, self.h).status_code, 200)
+        self.assertEqual(save({"business_name": ""}, self.h).status_code, 200)
+        self.assertEqual(save({"business_name": "North Shop"}, self.other_h).status_code, 200)
+
+    def test_company_logo_conflict_preserves_settings_and_cleans_upload(self):
+        def save(body, headers):
+            with self.captureOnCommitCallbacks(execute=True):
+                return self.client.patch("/api/settings/", json.dumps(body), content_type="application/json", **headers)
+
+        first = save({"business_logo": PNG_URL}, self.h)
+        self.assertEqual(first.status_code, 200)
+        before = self.stored_images()
+        duplicate = save({"business_name": "Other Shop", "business_logo": PNG_URL}, self.other_h)
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertIn("company logo is already in use", duplicate.json()["error"])
+        self.assertEqual(self.stored_images(), before)
+        self.assertEqual(self.client.get("/api/settings/", **self.other_h).json()["business_name"], "")
+        self.assertEqual(save({"business_logo": PNG_URL}, self.h).status_code, 200)
+        self.assertEqual(save({"business_logo": ""}, self.h).status_code, 200)
+        self.assertEqual(save({"business_logo": PNG_URL}, self.other_h).status_code, 200)
+
+    def test_identity_migration_stops_on_existing_duplicates_or_missing_logo(self):
+        migration = importlib.import_module("api.migrations.0013_unique_business_identity")
+        manager = m.UserSettings.objects
+        manager.filter(owner=self.user).update(business_name="North Shop")
+        manager.filter(owner=self.other).update(business_name=" north  SHOP ")
+        with self.assertRaisesRegex(RuntimeError, "Duplicate company names"):
+            migration.populate_fingerprints(apps, SimpleNamespace(connection=connection))
+        self.assertFalse(manager.filter(business_name_fingerprint__isnull=False).exists())
+        manager.filter(owner=self.other).update(business_name="", business_logo_key="a" * 32)
+        with self.assertRaisesRegex(RuntimeError, "company logo cannot be read"):
+            migration.populate_fingerprints(apps, SimpleNamespace(connection=connection))
+        self.assertFalse(manager.filter(business_name_fingerprint__isnull=False).exists())
+        variants = images.render(encoded("PNG", (64, 64)))
+        first_key, second_key = images.save(variants), images.save(variants)
+        manager.filter(owner=self.user).update(business_logo_key=first_key)
+        manager.filter(owner=self.other).update(business_logo_key=second_key)
+        with self.assertRaisesRegex(RuntimeError, "Duplicate company logos"):
+            migration.populate_fingerprints(apps, SimpleNamespace(connection=connection))
+        self.assertFalse(manager.filter(business_name_fingerprint__isnull=False).exists())
+        manager.filter(owner=self.other).update(business_logo_key="")
+        migration.populate_fingerprints(apps, SimpleNamespace(connection=connection))
+        first = manager.get(owner=self.user)
+        self.assertEqual(first.business_name_fingerprint, m.business_name_fingerprint("North Shop"))
+        self.assertTrue(first.business_logo_fingerprint)
+
+    def test_configured_low_stock_threshold_drives_product_and_dashboard_flags(self):
+        product = self.product(target_stock=100)
+        self.post("/api/receive/", {"product_id": product["id"], "quantity": 40, "unit_cost": "5"})
+        self.client.patch(
+            "/api/settings/", json.dumps({"low_stock_threshold": "0.5"}),
+            content_type="application/json", **self.h,
+        )
+        products = self.client.get("/api/products/", **self.h).json()
+        self.assertTrue(products[0]["low_stock"])
+        dashboard = self.client.get("/api/dashboard/", **self.h).json()
+        self.assertEqual(dashboard["low_stock"], ["Earbuds"])
+
+    def test_account_export_requires_email_confirmation_and_is_owner_scoped(self):
+        prefs, _ = m.UserSettings.objects.get_or_create(owner=self.user)
+        prefs.email_verified = True
+        prefs.business_logo_zoom = 150
+        prefs.save(update_fields=["email_verified", "business_logo_zoom"])
+        m.Product.objects.create(owner=self.user, name="Mine", price=10, cost=5)
+        m.Product.objects.create(owner=self.other, name="Not mine", price=10, cost=5)
+        with patch.object(svc, "email_delivery_configured", return_value=True), override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        ):
+            self.assertEqual(self.post("/api/account/confirm/", {"action": "export"}).status_code, 200)
+            token = re.search(r"token=([\w-]+)", mail.outbox[-1].body).group(1)
+            response = self.post(
+                "/api/account/export/", {"token": token, "confirmation": "EXPORT"}, {},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Mine", response.content.decode())
+        self.assertNotIn("Not mine", response.content.decode())
+        rows = list(csv.DictReader(io.StringIO(response.content.decode())))
+        settings_row = next(row for row in rows if row["record_type"] == "settings")
+        self.assertEqual(json.loads(settings_row["data"])["business_logo_zoom"], 150)
+        self.assertEqual(response["Cache-Control"], "no-store, private")
+        self.assertEqual(self.post(
+            "/api/account/export/", {"token": token, "confirmation": "EXPORT"}, {},
+        ).status_code, 403)
+
+    @patch("api.views.timezone.localdate", return_value=date(2026, 2, 10))
+    def test_reports_preserve_monthly_totals_and_owner_isolation(self, today):
+        m.Sale.objects.create(owner=self.user, date=date(2025, 12, 1), status="Paid", amount=100, cogs=40)
+        m.Sale.objects.create(owner=self.user, date=date(2026, 1, 5), status="Pending", amount=500, cogs=50)
+        m.Sale.objects.create(owner=self.user, date=date(2026, 2, 20), status="Paid", amount=50, cogs=20)
+        m.Sale.objects.create(owner=self.other, date=date(2025, 12, 1), status="Paid", amount=9000, cogs=0)
+        m.Expense.objects.create(owner=self.user, date=date(2025, 12, 3), amount=10)
+        m.Expense.objects.create(owner=self.user, date=date(2026, 1, 3), amount=7)
+        m.Expense.objects.create(owner=self.other, date=date(2025, 12, 3), amount=999)
+        response = self.client.get("/api/reports/", **self.h)
+        self.assertEqual(response.status_code, 200)
+        rows = response.json()
+        self.assertEqual([row["month"] for row in rows], ["2025-12", "2026-01", "2026-02"])
+        self.assertEqual(
+            [tuple(Decimal(row[k]) for k in ("revenue", "expenses", "gross_profit", "net_profit")) for row in rows],
+            [(100, 10, 60, 50), (0, 7, 0, -7), (50, 0, 30, 30)],
+        )
+
+    @patch("api.views.timezone.localdate", return_value=date(2026, 2, 10))
+    def test_reports_queries_do_not_grow_with_history(self, today):
+        sale = m.Sale.objects.create(owner=self.user, date=date(2026, 2, 1), amount=100, cogs=40)
+        recent_queries = self.query_count("/api/reports/")
+        sale.date = date(2020, 1, 1)
+        sale.save(update_fields=["date"])
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get("/api/reports/", **self.h)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 74)
+        self.assertEqual(len(queries), recent_queries)
+        self.assertLessEqual(len(queries), 6)
+
+    @patch("api.views.timezone.localdate", return_value=date(2026, 2, 10))
+    def test_reports_without_sales_and_with_only_future_sales(self, today):
+        m.Expense.objects.create(owner=self.user, date=date(2026, 2, 5), amount=7)
+        row = self.client.get("/api/reports/", **self.h).json()[0]
+        self.assertEqual((row["month"], Decimal(row["expenses"]), Decimal(row["net_profit"])), ("2026-02", 7, -7))
+        m.Sale.objects.create(owner=self.user, date=date(2026, 3, 1), amount=100, cogs=40)
+        self.assertEqual(self.client.get("/api/reports/", **self.h).json(), [])
+
+    def test_month_summary_weekly_sales_include_paid_and_pending(self):
+        for day, amount, status in (
+            (1, 10, "Paid"), (7, 20, "Pending"), (8, 30, "Paid"),
+            (15, 40, "Paid"), (22, 50, "Paid"), (31, 60, "Pending"),
+        ):
+            m.Sale.objects.create(owner=self.user, date=date(2026, 1, day), amount=amount, cogs=0, status=status)
+        m.Sale.objects.create(owner=self.other, date=date(2026, 1, 1), amount=999, cogs=0)
+        result = svc.month_summary(self.user, 2026, 1)
+        self.assertEqual(result["weekly_sales"], [30, 30, 40, 110])
+        self.assertEqual(result["revenue"], 130)
+
+    def test_account_deletion_requires_confirmed_email_link(self):
+        prefs, _ = m.UserSettings.objects.get_or_create(owner=self.user)
+        prefs.email_verified = True
+        prefs.save(update_fields=["email_verified"])
+        image_url = self.upload()
+        logo_response = self.client.patch(
+            "/api/settings/", json.dumps({"business_logo": PNG_URL}), content_type="application/json", **self.h,
+        )
+        self.assertEqual(logo_response.status_code, 200)
+        logo_url = logo_response.json()["business_logo_url"]
+        m.MagicLink.objects.create(email=self.user.email, token_hash="a" * 64, expires_at=timezone.now())
+        m.LoginAttempt.objects.create(username=self.user.username)
+        with patch.object(svc, "email_delivery_configured", return_value=True), override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        ):
+            self.assertEqual(self.post("/api/account/confirm/", {"action": "delete"}).status_code, 200)
+            token = re.search(r"token=([\w-]+)", mail.outbox[-1].body).group(1)
+            self.assertEqual(self.post(
+                "/api/account/delete/", {"token": token, "confirmation": "NO"}, {},
+            ).status_code, 400)
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.post(
+                    "/api/account/delete/", {"token": token, "confirmation": "DELETE"}, {},
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(get_user_model().objects.filter(pk=self.user.pk).exists())
+        self.assertTrue(get_user_model().objects.filter(pk=self.other.pk).exists())
+        self.assertFalse(m.MagicLink.objects.filter(email__iexact=self.user.email).exists())
+        self.assertFalse(m.LoginAttempt.objects.filter(username__iexact=self.user.username).exists())
+        self.assertEqual(self.image_status(image_url), 404)
+        self.assertEqual(self.image_status(logo_url), 404)
+
+    def test_email_alerts_are_opt_in_and_deduplicated_until_resolved(self):
+        prefs, _ = m.UserSettings.objects.get_or_create(owner=self.user)
+        prefs.email_verified = True
+        prefs.revenue_goal = Decimal("10")
+        prefs.notify_goal_reached = True
+        prefs.save()
+        m.Sale.objects.create(owner=self.user, amount=Decimal("10"), date=timezone.localdate())
+        with patch.object(svc, "email_delivery_configured", return_value=True), override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                self.client.get("/api/dashboard/", **self.h)
+                self.client.get("/api/dashboard/", **self.h)
+            self.assertEqual(len(mail.outbox), 1)
+
+    @override_settings(NEXA_ASYNC_ALERTS=True)
+    def test_queued_alerts_retry_and_do_not_block_requests(self):
+        prefs = m.UserSettings.objects.get(owner=self.user)
+        prefs.email_verified = True
+        prefs.revenue_goal = Decimal("10")
+        prefs.notify_goal_reached = True
+        prefs.save()
+        m.Sale.objects.create(owner=self.user, amount=Decimal("10"), date=timezone.localdate())
+        with patch.object(svc, "email_delivery_configured", return_value=True), override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        ):
+            self.assertEqual(self.client.get("/api/dashboard/", **self.h).status_code, 200)
+            self.assertEqual(self.client.get("/api/dashboard/", **self.h).status_code, 200)
+            self.assertEqual(m.NotificationDelivery.objects.count(), 1)
+            self.assertEqual(len(mail.outbox), 0)
+            with patch.object(svc, "send_mail", side_effect=OSError("temporary failure")):
+                self.assertTrue(svc.process_alert_delivery())
+            delivery = m.NotificationDelivery.objects.get(owner=self.user)
+            self.assertEqual(delivery.attempts, 1)
+            self.assertGreater(delivery.available_at, timezone.now())
+            self.assertFalse(svc.process_alert_delivery())
+            m.NotificationDelivery.objects.filter(pk=delivery.pk).update(available_at=timezone.now())
+            self.assertTrue(svc.process_alert_delivery())
+            self.assertFalse(m.NotificationDelivery.objects.exists())
+            self.assertEqual(len(mail.outbox), 1)
+            self.assertEqual(self.client.get("/api/dashboard/", **self.h).status_code, 200)
+            self.assertFalse(m.NotificationDelivery.objects.exists())
+
+    @override_settings(NEXA_ASYNC_ALERTS=True)
+    def test_alert_queue_rolls_back_with_notification_state(self):
+        prefs = m.UserSettings.objects.get(owner=self.user)
+        prefs.email_verified = True
+        prefs.revenue_goal = Decimal("10")
+        prefs.notify_goal_reached = True
+        prefs.save()
+        m.Sale.objects.create(owner=self.user, amount=Decimal("10"), date=timezone.localdate())
+        with self.assertRaises(RuntimeError), transaction.atomic():
+            svc.sync_email_notifications(self.user)
+            self.assertEqual(m.NotificationDelivery.objects.count(), 1)
+            raise RuntimeError("roll back")
+        self.assertFalse(m.NotificationDelivery.objects.exists())
+        self.assertFalse(m.NotificationState.objects.filter(owner=self.user).exists())
+
+    def test_alert_worker_reclaims_expired_leases(self):
+        delivery = m.NotificationDelivery.objects.create(
+            owner=self.user, email=self.user.email, currency="USD", time_zone="UTC",
+            messages={"goal": "Goal reached"}, lease_token="old", locked_until=timezone.now() + timedelta(minutes=1),
+        )
+        with patch.object(svc, "deliver_email_notifications") as send:
+            self.assertFalse(svc.process_alert_delivery())
+            send.assert_not_called()
+            m.NotificationDelivery.objects.filter(pk=delivery.pk).update(locked_until=timezone.now() - timedelta(seconds=1))
+            call_command("run_alert_worker", "--once")
+            send.assert_called_once()
+        self.assertFalse(m.NotificationDelivery.objects.filter(pk=delivery.pk).exists())
+
+    def test_settings_email_verification_marks_the_account_email_verified(self):
+        with patch.object(svc, "email_delivery_configured", return_value=True), override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        ):
+            self.assertEqual(self.post("/api/settings/verify-email/", {}).status_code, 200)
+            token = re.search(r"token=([\w-]+)", mail.outbox[-1].body).group(1)
+            self.assertEqual(self.post("/api/auth/verify/", {"token": token}, {}).status_code, 200)
+        self.assertTrue(m.UserSettings.objects.get(owner=self.user).email_verified)
 
     def test_revenue_goal_validation_and_clearing(self):
         def save(body, headers=None):

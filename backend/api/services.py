@@ -1,22 +1,27 @@
 import hashlib
+import logging
 import re
 import secrets
+import smtplib
 from calendar import monthrange
 from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.cache import cache
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.core.validators import validate_email
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Count, Q, Sum, Value
-from django.db.models.functions import Coalesce, Lower, Trim
+from django.db.models.functions import Coalesce, Lower, Trim, TruncMonth
 from django.utils import timezone
 
 from . import models as m
+
+logger = logging.getLogger(__name__)
 
 CENTS = Decimal("0.01")
 COGS_ESTIMATE_RATIO = Decimal("0.6")  # used when a sale is not linked to a product
@@ -40,6 +45,8 @@ def _hash(value):
 # ---------- auth ----------
 
 def send_magic_link(email):
+    if not email_delivery_configured():
+        raise ServiceError("Secure email delivery is not configured.", 503)
     email = email.strip().lower()
     recent = m.MagicLink.objects.filter(email=email, created_at__gte=timezone.now() - timedelta(hours=1)).count()
     if recent >= 5:
@@ -49,12 +56,98 @@ def send_magic_link(email):
         email=email, token_hash=_hash(token),
         expires_at=timezone.now() + timedelta(minutes=settings.MAGIC_LINK_MINUTES),
     )
-    send_mail(
-        "Your Nexa sign-in link",
-        f"Open this link to sign in to Nexa (valid {settings.MAGIC_LINK_MINUTES} minutes):\n\n"
-        f"{settings.FRONTEND_URL}?token={token}\n\nIf you did not ask for this, ignore this email.",
-        settings.DEFAULT_FROM_EMAIL, [email],
+    try:
+        sent = send_mail(
+            "Your Nexa sign-in link",
+            f"Open this link to sign in to Nexa (valid {settings.MAGIC_LINK_MINUTES} minutes):\n\n"
+            f"{settings.FRONTEND_URL}#token={token}\n\nIf you did not ask for this, ignore this email.",
+            settings.DEFAULT_FROM_EMAIL, [email], fail_silently=False,
+        )
+        if sent != 1:
+            raise OSError("Email backend did not confirm delivery.")
+    except (OSError, smtplib.SMTPException, ValueError) as error:
+        m.MagicLink.objects.filter(token_hash=_hash(token)).delete()
+        logger.exception("Could not send sign-in link")
+        raise ServiceError("The email could not be sent. Try again later.", 503) from error
+
+
+def _rate_limit_hit(key, limit, timeout):
+    if cache.add(key, 1, timeout=timeout):
+        return False
+    try:
+        count = cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, timeout=timeout)
+        return False
+    return count > limit
+
+
+def request_password_reset(email, remote_addr=""):
+    email = email.strip().lower()
+    email_key = "password-reset:email:" + _hash(email)
+    ip_key = "password-reset:ip:" + _hash(remote_addr or "unknown")
+    if _rate_limit_hit(email_key, 3, 60 * 60) or _rate_limit_hit(ip_key, 20, 60 * 60):
+        return
+
+    user = users_with_email(email).filter(is_active=True).first()
+    if user is None:
+        return
+    if not email_delivery_configured():
+        logger.error("Secure email delivery is not configured for password reset.")
+        return
+
+    now = timezone.now()
+    m.PasswordResetToken.objects.filter(owner=user).filter(
+        Q(used_at__isnull=False) | Q(expires_at__lte=now),
+    ).delete()
+    token = secrets.token_urlsafe(32)
+    reset_token = m.PasswordResetToken.objects.create(
+        owner=user,
+        token_hash=_hash(token),
+        expires_at=now + timedelta(minutes=settings.PASSWORD_RESET_MINUTES),
     )
+    try:
+        sent = send_mail(
+            "Reset your Nexa password",
+            f"Open this link to reset your Nexa password (valid {settings.PASSWORD_RESET_MINUTES} minutes):\n\n"
+            f"{settings.FRONTEND_URL}#password_reset={token}\n\n"
+            "If you did not ask for this, ignore this email.",
+            settings.DEFAULT_FROM_EMAIL, [email], fail_silently=False,
+        )
+        if sent != 1:
+            raise OSError("Email backend did not confirm delivery.")
+    except (OSError, smtplib.SMTPException, ValueError) as error:
+        reset_token.delete()
+        logger.exception("Could not send password reset email")
+
+
+@transaction.atomic
+def reset_password(token, password, password2):
+    if password != password2:
+        raise ServiceError("The passwords do not match.")
+
+    candidate = m.PasswordResetToken.objects.filter(token_hash=_hash(token)).first()
+    if candidate is None:
+        raise ServiceError("This password reset link is invalid or has expired.")
+    user = get_user_model().objects.select_for_update().filter(pk=candidate.owner_id).first()
+    if user is None or not user.is_active:
+        raise ServiceError("This password reset link is invalid or has expired.")
+    reset_token = m.PasswordResetToken.objects.select_for_update().filter(
+        pk=candidate.pk, owner=user, used_at__isnull=True, expires_at__gt=timezone.now(),
+    ).first()
+    if reset_token is None:
+        raise ServiceError("This password reset link is invalid or has expired.")
+
+    try:
+        validate_password(password, user)
+    except DjangoValidationError as error:
+        raise ServiceError(" ".join(error.messages))
+
+    user.set_password(password)
+    user.save(update_fields=["password"])
+    now = timezone.now()
+    m.PasswordResetToken.objects.filter(owner=user, used_at__isnull=True).update(used_at=now)
+    m.ApiToken.objects.filter(user=user).delete()
 
 
 def users_with_email(email):
@@ -89,6 +182,11 @@ def verify_magic_link(token):
     if not user.is_active:
         raise ServiceError("This account is inactive.", 403)
     initialize_business_data(user)
+    if user.email.strip().lower() == email:
+        prefs = m.UserSettings.objects.get(owner=user)
+        if not prefs.email_verified:
+            prefs.email_verified = True
+            prefs.save(update_fields=["email_verified"])
     link.used_at = timezone.now()
     link.save(update_fields=["used_at"])
     return user, issue_token(user)
@@ -259,7 +357,7 @@ def month_summary(owner, year, month):
     exp = m.Expense.objects.filter(owner=owner, date__range=(start, end)).aggregate(t=Sum("amount"))["t"] or Decimal(0)
     gross = rev - cogs
     weeks = [Decimal(0)] * 4
-    for d, amt in sales.values_list("date", "amount"):
+    for d, amt in sales.order_by().values_list("date").annotate(total=Sum("amount")):
         weeks[min((d.day - 1) // 7, 3)] += amt
     top = (
         sales.exclude(product=None).values("product__name").annotate(units=Sum("quantity")).order_by("-units")[:5]
@@ -270,6 +368,40 @@ def month_summary(owner, year, month):
         "weekly_sales": weeks,
         "top_products": [{"name": t["product__name"], "units": t["units"]} for t in top],
     }
+
+
+def monthly_reports(owner, today):
+    first = m.Sale.objects.filter(owner=owner).order_by("date").values_list("date", flat=True).first()
+    start = date(first.year, first.month, 1) if first else date(today.year, today.month, 1)
+    end = month_bounds(today.year, today.month)[1]
+    if start > end:
+        return []
+    sales = {
+        row["month"]: row
+        for row in m.Sale.objects.filter(owner=owner, status=m.Sale.PAID, date__range=(start, end))
+        .order_by().annotate(month=TruncMonth("date")).values("month")
+        .annotate(revenue=Sum("amount"), cogs=Sum("cogs"))
+    }
+    expenses = {
+        row["month"]: row["total"]
+        for row in m.Expense.objects.filter(owner=owner, date__range=(start, end))
+        .order_by().annotate(month=TruncMonth("date")).values("month").annotate(total=Sum("amount"))
+    }
+    rows = []
+    year, month = start.year, start.month
+    while (year, month) <= (today.year, today.month):
+        key = date(year, month, 1)
+        total = sales.get(key)
+        revenue = total["revenue"] if total else Decimal(0)
+        cogs = total["cogs"] if total else Decimal(0)
+        expense = expenses.get(key, Decimal(0))
+        gross = revenue - cogs
+        rows.append({
+            "month": f"{year}-{month:02d}", "revenue": revenue, "expenses": expense,
+            "gross_profit": gross, "net_profit": gross - expense,
+        })
+        year, month = shift_month(year, month, 1)
+    return rows
 
 
 def previous_month(year, month):
@@ -349,6 +481,7 @@ def goal_series(owner, goal, period, today):
 
 def assistant_context(owner, year, month):
     """Build a compact, owner-scoped summary; never include individual transactions."""
+    prefs, _ = m.UserSettings.objects.get_or_create(owner=owner)
     start, end = month_bounds(year, month)
     current = month_summary(owner, year, month)
     previous = month_summary(owner, *previous_month(year, month))
@@ -373,7 +506,7 @@ def assistant_context(owner, year, month):
     )
     return {
         "period": current["month"],
-        "currency": "USD",
+        "currency": prefs.currency,
         "summary": {
             key: amount(current[key])
             for key in ("revenue", "cogs", "expenses", "gross_profit", "net_profit")
@@ -412,11 +545,13 @@ def forecast(summary):
     }
 
 
-def insights(owner, slow_days=45):
+def insights(owner, slow_days=None):
     out = []
     today = timezone.localdate()
+    prefs, _ = m.UserSettings.objects.get_or_create(owner=owner)
+    slow_days = prefs.slow_stock_days if slow_days is None else slow_days
     products = list(with_stock(m.Product.objects.filter(owner=owner).select_related("supplier")))
-    low = [p for p in products if p.target_stock and p.in_stock / p.target_stock < 0.35]
+    low = [p for p in products if p.target_stock and p.in_stock / p.target_stock < prefs.low_stock_threshold]
     sold30 = {
         row["product"]: row["t"]
         for row in m.Sale.objects.filter(owner=owner, product__in=low, date__gte=today - timedelta(days=30))
@@ -444,3 +579,198 @@ def insights(owner, slow_days=45):
                     "text": f"{best.name} has your widest margin. Consider promoting it."})
     rank = {"High": 0, "Medium": 1, "Low": 2}
     return sorted(out, key=lambda i: rank[i["priority"]])
+
+
+def _notification_candidates(owner):
+    prefs, _ = m.UserSettings.objects.get_or_create(owner=owner)
+    if not prefs.email_verified or not owner.email:
+        return []
+
+    candidates = []
+    if prefs.notify_low_stock:
+        products = with_stock(m.Product.objects.filter(owner=owner))
+        for product in products:
+            if product.target_stock and product.in_stock / product.target_stock < prefs.low_stock_threshold:
+                candidates.append((
+                    f"low:{product.pk}",
+                    f"{product.name} is low on stock ({product.in_stock} left of {product.target_stock}).",
+                ))
+    if prefs.notify_slow_stock:
+        for batch in m.StockBatch.objects.filter(owner=owner, quantity_left__gt=0).select_related("product"):
+            if batch.age_days > prefs.slow_stock_days:
+                candidates.append((
+                    f"slow:{batch.pk}",
+                    f"{batch.product.name} has a stock batch aged {batch.age_days} days.",
+                ))
+    if prefs.notify_goal_reached and prefs.revenue_goal is not None:
+        progress = goal_progress(owner, prefs.revenue_goal, prefs.goal_period)
+        if progress["revenue"] >= prefs.revenue_goal:
+            candidates.append((
+                f"goal:{progress['period']}:{progress['start'].isoformat()}",
+                f"You reached your {progress['period']} revenue goal of {prefs.revenue_goal} {prefs.currency}.",
+            ))
+    return candidates
+
+
+def sync_email_notifications(owner):
+    prefs, _ = m.UserSettings.objects.get_or_create(owner=owner)
+    active = dict(_notification_candidates(owner))
+    send = {}
+    with transaction.atomic():
+        states = {
+            row.key: row
+            for row in m.NotificationState.objects.select_for_update().filter(owner=owner)
+        }
+        for key, state in states.items():
+            should_be_active = key in active
+            if state.active != should_be_active:
+                state.active = should_be_active
+                state.save(update_fields=["active", "updated_at"])
+        for key, message in active.items():
+            state = states.get(key)
+            if state is None:
+                state, created = m.NotificationState.objects.get_or_create(
+                    owner=owner, key=key, defaults={"active": True},
+                )
+                if created:
+                    send[key] = message
+            elif not state.active:
+                state.active = True
+                state.save(update_fields=["active", "updated_at"])
+                send[key] = message
+        if send and settings.NEXA_ASYNC_ALERTS:
+            m.NotificationDelivery.objects.create(
+                owner=owner, email=owner.email, currency=prefs.currency, time_zone=prefs.time_zone, messages=send,
+            )
+    if send and not settings.NEXA_ASYNC_ALERTS:
+        timezone_name = prefs.time_zone
+        currency = prefs.currency
+        email = owner.email
+        owner_id = owner.pk
+        transaction.on_commit(
+            lambda: _send_email_notifications(owner_id, email, currency, timezone_name, send)
+        )
+
+
+def _send_email_notifications(owner_id, email, currency, timezone_name, messages):
+    try:
+        deliver_email_notifications(email, currency, timezone_name, messages)
+    except (OSError, smtplib.SMTPException, ValueError):
+        logger.exception("Could not send business alerts to account %s", owner_id)
+        m.NotificationState.objects.filter(owner_id=owner_id, key__in=messages).update(active=False)
+
+
+def deliver_email_notifications(email, currency, timezone_name, messages):
+    if not email_delivery_configured():
+        raise OSError("Secure email delivery is not configured.")
+    sent = send_mail(
+        "Nexa business alerts",
+        f"Your Nexa alerts ({currency}, {timezone_name}):\n\n"
+        + "\n".join(f"- {item}" for item in messages.values()),
+        settings.DEFAULT_FROM_EMAIL,
+        [email],
+        fail_silently=False,
+    )
+    if sent != 1:
+        raise OSError("Email backend did not confirm delivery.")
+
+
+def process_alert_delivery():
+    now = timezone.now()
+    token = secrets.token_hex(16)
+    with transaction.atomic():
+        pending = m.NotificationDelivery.objects.filter(available_at__lte=now).filter(
+            Q(locked_until__isnull=True) | Q(locked_until__lte=now)
+        ).order_by("id")
+        if connection.features.has_select_for_update_skip_locked:
+            pending = pending.select_for_update(skip_locked=True)
+        else:
+            pending = pending.select_for_update()
+        delivery = pending.first()
+        if delivery is None:
+            return False
+        delivery.lease_token = token
+        delivery.locked_until = now + timedelta(minutes=5)
+        delivery.attempts += 1
+        delivery.save(update_fields=["lease_token", "locked_until", "attempts"])
+    try:
+        deliver_email_notifications(delivery.email, delivery.currency, delivery.time_zone, delivery.messages)
+    except (OSError, smtplib.SMTPException, ValueError):
+        logger.exception("Could not deliver queued alert for account %s; retrying", delivery.owner_id)
+        delay = min(3600, 5 * (2 ** min(delivery.attempts - 1, 10)))
+        m.NotificationDelivery.objects.filter(pk=delivery.pk, lease_token=token).update(
+            lease_token="", locked_until=None, available_at=timezone.now() + timedelta(seconds=delay),
+        )
+    else:
+        m.NotificationDelivery.objects.filter(pk=delivery.pk, lease_token=token).delete()
+    return True
+
+
+def request_account_action(owner, action):
+    if not isinstance(action, str) or action not in dict(m.AccountActionToken.ACTIONS):
+        raise ServiceError("Choose export or delete.")
+    if not email_delivery_configured():
+        raise ServiceError("Secure email delivery is not configured.", 503)
+    prefs, _ = m.UserSettings.objects.get_or_create(owner=owner)
+    if not prefs.email_verified or not owner.email:
+        raise ServiceError("Verify your account email before requesting this action.", 403)
+    cache_key = f"nexa:account_action:{owner.pk}:{action}"
+    if not cache.add(cache_key, 1, timeout=60):
+        raise ServiceError("A confirmation email was sent recently. Check your inbox before retrying.", 429)
+
+    m.AccountActionToken.objects.filter(owner=owner).filter(
+        Q(used_at__isnull=False) | Q(expires_at__lte=timezone.now())
+    ).delete()
+    token = secrets.token_urlsafe(32)
+    action_token = m.AccountActionToken.objects.create(
+        owner=owner,
+        action=action,
+        token_hash=_hash(token),
+        expires_at=timezone.now() + timedelta(minutes=10),
+    )
+    link = f"{settings.FRONTEND_URL}#account_action={action}&token={token}"
+    try:
+        sent = send_mail(
+            "Confirm your Nexa account action",
+            f"Open this link to confirm your Nexa {action} request. The link expires in 10 minutes:\n\n"
+            f"{link}\n\nIf you did not request this, ignore this email.",
+            settings.DEFAULT_FROM_EMAIL,
+            [owner.email],
+            fail_silently=False,
+        )
+        if sent != 1:
+            raise OSError("Email backend did not confirm delivery.")
+    except (OSError, smtplib.SMTPException, ValueError) as error:
+        action_token.delete()
+        cache.delete(cache_key)
+        logger.exception("Could not send account action confirmation to account %s", owner.pk)
+        raise ServiceError("The confirmation email could not be sent. Try again later.", 503) from error
+
+
+def consume_account_action(action, token):
+    if not isinstance(action, str) or action not in dict(m.AccountActionToken.ACTIONS):
+        raise ServiceError("Choose a valid account action.")
+    action_token = m.AccountActionToken.objects.select_for_update().filter(
+        action=action,
+        token_hash=_hash(token),
+        used_at__isnull=True,
+        expires_at__gt=timezone.now(),
+    ).first()
+    if action_token is None:
+        raise ServiceError("This confirmation link is invalid or has expired.", 403)
+    action_token.used_at = timezone.now()
+    action_token.save(update_fields=["used_at"])
+    return action_token
+
+
+def email_delivery_configured():
+    if settings.DEBUG and settings.EMAIL_BACKEND in (
+        "django.core.mail.backends.console.EmailBackend",
+        "django.core.mail.backends.locmem.EmailBackend",
+    ):
+        return True
+    return (
+        settings.EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend"
+        and bool(settings.EMAIL_HOST and settings.EMAIL_HOST_USER and settings.EMAIL_HOST_PASSWORD)
+        and (settings.EMAIL_USE_TLS or settings.EMAIL_USE_SSL)
+    )

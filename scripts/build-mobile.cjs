@@ -25,8 +25,6 @@ if (input) {
 fs.mkdirSync(output, { recursive: true });
 let html = fs.readFileSync(path.join(frontend, "Nexa.html"), "utf8");
 const replacements = [
-  ['https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js', 'react.production.min.js'],
-  ['https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js', 'react-dom.production.min.js'],
   ['<script src="Nexa.js"></script>', '<script src="mobile-config.js"></script>\n<script src="Nexa.js"></script>'],
 ];
 for (const [from, to] of replacements) {
@@ -38,7 +36,4 @@ fs.writeFileSync(path.join(output, "mobile-config.js"),
   `window.NEXA_MOBILE = true;\nwindow.NEXA_API = ${JSON.stringify(api)};\n`);
 for (const name of ["Nexa.css", "Nexa.js"]) {
   fs.copyFileSync(path.join(frontend, name), path.join(output, name));
-}
-for (const [pkg, name] of [["react", "react.production.min.js"], ["react-dom", "react-dom.production.min.js"]]) {
-  fs.copyFileSync(path.join(root, "node_modules", pkg, "umd", name), path.join(output, name));
 }

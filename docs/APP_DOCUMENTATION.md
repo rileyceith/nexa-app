@@ -2,7 +2,7 @@
 
 Nexa is a business dashboard for tracking sales, stock, purchases, customers, and expenses. It has two parts:
 
-- **Frontend**: a single HTML file with a React interface, opened directly in a browser.
+- **Frontend**: a React interface built from modular JavaScript/JSX source under `frontend/src/`, bundled for browser and mobile.
 - **Backend**: a Django JSON API with SQLite storage by default, or PostgreSQL when `NEXA_DATABASE_URL` is set. All data is scoped to the signed-in user.
 
 It also includes a financial intelligence layer with two engines. The **Algorithm engine** runs deterministic calculations and works without any AI service. The **AI engine** answers questions in natural language, using aggregated figures from the same data.
@@ -63,23 +63,27 @@ The sign-up form asks for an email address, username, password, password confirm
 - Each token is valid for 30 days. Signing out revokes the token on the server.
 - After **5 failed sign-in attempts within 15 minutes**, the account is locked for further attempts. The API returns `429`.
 
-### Passwordless sign-in (API only)
+### Resetting a password
 
-The API also supports a one-time sign-in link:
+Choose **Forgot password?** on the sign-in form and enter the account email address. Nexa gives the
+same response whether the account exists or not. If it does, a reset link is emailed. The link
+expires after 30 minutes by default, is single-use, and can be configured from 5 to 120 minutes.
+Choosing a new password uses the same Django password validators as account creation and signs out
+all existing sessions. Requests are limited to three per email address and 20 per IP address per
+hour; throttled requests keep the same response.
 
-1. `POST /api/auth/request-link/` with `{"email": "..."}`. The response is the same whether or not the address is known. In development, the link is printed to the server console.
-2. `POST /api/auth/verify/` with `{"token": "<token from the link>"}`. This returns an API token.
+### Passwordless sign-in
 
-A link expires after 15 minutes. Each email address can request at most 5 links per hour. An account created through this flow gets an unusable password, so it can sign in again only through a new link. The browser UI does not yet handle this flow. See [Known limitations](#known-limitations).
+The API also supports a one-time sign-in link using `POST /api/auth/request-link/` and
+`POST /api/auth/verify/`. Links expire after 15 minutes and the browser opens the link directly.
+An account created through this flow has an unusable password until a password reset is completed.
 
 ### Demo accounts
 
 `python manage.py seed_demo <email>` creates an account whose username is the email address, with an unusable password. The browser sign-in form therefore **cannot** sign in to this account. To use the seeded data in the browser:
 
-1. Request a link: `POST /api/auth/request-link/` with `{"email": "you@email.com"}`.
-2. Copy the `token` value from the link printed in the server console.
-3. Exchange it: `POST /api/auth/verify/` with `{"token": "<that token>"}`. Copy the `token` field from the response.
-4. In the browser's developer console on `Nexa.html`, run `localStorage.setItem('nexa_token', '<token from step 3>')`, then reload the page.
+1. Request a sign-in link for the seeded account's email address using `POST /api/auth/request-link/`.
+2. Open the emailed link (in development, copy it from the server console).
 
 ---
 
@@ -90,7 +94,7 @@ The sidebar has these pages:
 | Page | What it is for | Backed by the API today? |
 |---|---|---|
 | Overview | Dashboard figures for the month: KPIs, weekly sales, top products, and forecast | **Yes**: the KPIs, weekly sales, top products, and forecast load from `dashboard/?month=`. Expenses, sales, and reports come from `expenses/`, `sales/`, and `reports/`. These load when the page opens and again after each sale or expense. The Revenue ring and caption use the saved revenue goal from `settings/`. When a revenue goal is set, the sales chart loads its buckets from `settings/series/` and changes shape with the goal period, with a dashed target marker. A day goal shows each day of the current month, with the goal as the target. A week goal shows the last 8 Monday-to-Sunday weeks, with the goal as the target. A month goal shows the last 6 calendar months, with the goal as the target. A year goal shows the 12 months of the current year, with the goal divided by 12 as the monthly target. Future periods show the target marker with no bar. Bars can rise above the target marker. With no goal, the chart shows the last four weeks and a next-week forecast bar. The low-stock warning uses the loaded stock. |
-| Settings | Light or dark theme (local only), and a revenue goal for a day, week, month, or year. Progress counts only Paid sales in the period, and shows the amount left and the period dates. The goal also sets the target and the period shown on the Overview sales chart (see Overview). | **Yes** for the revenue goal: it loads from `settings/` and `settings/series/` when the page opens, saves with `PATCH /api/settings/`, and then reloads both. The theme is local only. |
+| Settings | Appearance, business, inventory, notifications, goals, and account/data categories. Business settings include the name and an optional company logo shown beneath Nexa in the app. Logo zoom and position can be previewed and saved for desktop and mobile. CSV export and account deletion require a short-lived email confirmation and typed confirmation. | **Yes**: settings load and save through `settings/`; theme changes save immediately, other preferences use **Save settings**, and the revenue goal has its own save control. Logo images use a public, unguessable URL and are not included in CSV exports. Currency changes relabel stored amounts without conversion. Account email verification uses the sign-in link flow. Alerts are deduplicated while a condition remains active; aged-stock alerts are detected on the next app request after the threshold is crossed, not by a scheduler. |
 | Sales | Record a sale: customer, amount, Paid or Pending status, and an optional product with quantity. A product sale takes that quantity from stock straight away, oldest batch first. Out-of-stock products cannot be chosen. | **Yes**: records are saved with `POST /api/sales/`. The list is not reloaded from the API. |
 | Products | Products, prices, costs, and target stock | Partly. The list loads from `products/` when the page opens. Suppliers are not loaded from `suppliers/`, and the page has no create or edit form. |
 | Stock | Stock level per product, reorders, and low-stock warnings | **Yes**: products, batches, and purchases load from `products/`, `batches/`, and `purchases/` when the page opens. Reorder saves a purchase with `POST /api/purchases/`. |
@@ -235,10 +239,14 @@ Nexa-app/
 ├── docs/
 │   └── APP_DOCUMENTATION.md      This document
 ├── frontend/
-│   ├── Nexa.html                 Page markup and React CDN scripts
+│   ├── Nexa.html                 Page markup
 │   ├── Nexa.css                  Frontend styles
-│   ├── Nexa.jsx                  Editable React application source
-│   └── Nexa.js                   Generated browser-ready application script
+│   ├── Nexa.js                   Generated browser-ready application bundle
+│   └── src/
+│       ├── api/                  Shared API client
+│       ├── components/           Reusable React dialogs
+│       ├── features/             Feature-specific UI, API calls and helpers
+│       └── main.jsx              Browser application entry point
 └── backend/
     ├── manage.py
     ├── requirements.txt          Django only
@@ -248,23 +256,25 @@ Nexa-app/
     └── api/
         ├── models.py             Data model
         ├── views.py              Endpoint handlers and the api() decorator
-        ├── urls.py               Routes under /api/
+        ├── urls.py               Domain route aggregation under /api/
         ├── services.py           Auth, sales, stock, FIFO, summaries, forecast, insights
-        ├── algorithms.py         Algorithm engine
-        ├── assistant.py          AI engine (Gemini call)
+        ├── auth/, catalog/       Domain route packages
+        ├── sales/, inventory/    Domain route packages
+        ├── reporting/            Reporting routes
+        ├── insights/             Insights routes and calculation/AI engines
+        ├── tests/                Backend test suite
         ├── middleware.py         CORS handling
-        ├── tests.py              Automated tests
         └── management/commands/
             └── seed_demo.py      Sample data command
 ```
 
-After editing `frontend/Nexa.jsx`, run `npm ci` and `npm run build:frontend` from the
+After editing frontend source under `frontend/src/`, run `npm ci` and `npm run build:frontend` from the
 repository root, and commit the regenerated `frontend/Nexa.js`. The HTML, CSS and generated
 JavaScript must be deployed together; HTML and CSS changes do not need a build.
 
 `backend/venv/` is the local Python environment and is not part of the application. Do not commit it.
 
-The browser loads React from a CDN, so the page needs internet access to load it.
+React is bundled into `frontend/Nexa.js`, so the app does not load its React runtime from a CDN.
 
 ---
 
@@ -298,28 +308,34 @@ All paths are under `/api/`. Requests and responses use JSON.
 | 2 | POST | `auth/login/` | Public | `{username, password}` | Sign in. Returns 200 with the same shape as register. |
 | 3 | POST | `auth/request-link/` | Public | `{email}` | Send a sign-in link. Same response for any valid address. |
 | 4 | POST | `auth/verify/` | Public | `{token}` | Exchange a link token for an API token. Returns `{token, user: {id, email}}`. |
-| 5 | POST | `auth/logout/` | Yes | none | Revoke the current token. |
-| 6 | GET | `me/` | Yes | none | Current user: `{id, username, email, is_staff}`. The dashboard shows an **Admin** button, a link to the Django admin, only when `is_staff` is true. |
-| 7 | GET, POST | `products/` | Yes | GET: `?q=`. POST: `{name, price, cost, category, target_stock, supplier}` | List or create products. |
-| 8 | GET, PATCH | `products/<id>/` | Yes | PATCH: fields to change, including `image` | Read or update a product. `image` is a data URL (`data:image/png;base64,...`), or `""` to remove the photo. Accepts PNG, JPEG, WebP, or GIF up to 1 MB. The response carries `image_url` instead of the image data. |
-| 9 | GET, POST | `suppliers/` | Yes | POST: supplier fields | List or create suppliers. |
-| 10 | GET | `customers/` | Yes | none | Customers with order count, spend, last purchase, and products bought. |
-| 11 | GET, POST | `sales/` | Yes | GET: `?status=Paid\|Pending&q=`. POST: `{customer, amount, status, product_id, quantity}` | List or record sales. `product_id` and `quantity` are optional. |
-| 12 | PATCH | `sales/<id>/` | Yes | `{status}` | Mark a sale as Paid or Pending. |
-| 13 | GET, POST | `expenses/` | Yes | GET: `?month=YYYY-MM` (includes category totals). POST: `{category, amount}` | List or record expenses. |
-| 14 | GET | `stock/` | Yes | none | Products with stock level and low-stock flag. |
-| 15 | GET | `batches/` | Yes | `?slow&min_age=45` | Stock batches. `slow` filters to slow stock. |
-| 16 | GET, POST | `purchases/` | Yes | POST: `{product_id, quantity?, unit_cost?}` | List purchase orders, or reorder a product. |
-| 17 | POST | `purchases/<id>/receive/` | Yes | none | Receive an order into stock. |
-| 18 | POST | `receive/` | Yes | `{product_id}` or `{new_product_name, price}`, plus `{quantity, unit_cost, supplier}` and optional `image` (data URL, same limits as above) | Receive stock for an existing or new product. A new-product name matching an existing product adds a batch to that product; an image replaces its photo. Returns the batch and the `product`, which carries `image_url`. |
-| 19 | GET | `dashboard/` | Yes | `?month=YYYY-MM` | KPIs, change against the previous month, weekly sales, top products, and forecast. |
-| 20 | GET | `reports/` | Yes | none | Results month by month. |
-| 21 | GET | `insights/` | Yes | none | Recommendations (see [Recommendations](#recommendations-insights)). |
-| 22 | POST | `assistant/chat/` | Yes | `{question, month?}` | Ask the AI engine. |
-| 23 | POST | `assistant/analyze/` | Yes | `{analysis, month?}` | Run an algorithm analysis listed in [Algorithm analyses](#algorithm-analyses). |
-| 24 | GET, PATCH | `settings/` | Yes | PATCH: `{revenue_goal?, goal_period?}` | Read or update the revenue goal. `goal_period` is `day`, `week`, `month`, or `year` (default `month`). A `revenue_goal` of `null` or `""` clears the goal. GET and PATCH return `{revenue_goal, goal_period, progress}`. `progress` is `null` when no goal is set; otherwise it holds `period`, `start`, `end`, `revenue`, `goal`, `percent`, and `remaining` for the current period. Weeks run Monday to Sunday, and years run January 1 to December 31. |
-| 25 | GET | `settings/series/` | Yes | none | Chart buckets for the saved revenue goal period, used by the Overview sales chart. Returns `null` when no goal is set. Otherwise returns `{period, target, current, buckets}`. `target` is the goal (a twelfth of it for `year`), `current` is the index of the current bucket, and each bucket has `start`, `end`, and `amount`. Buckets count only Paid sales in the period, with no row limit: each day of the current month, the last 8 Monday-to-Sunday weeks, the last 6 months, or the 12 months of the current year. |
-| 26 | GET | `images/<key>/` | Public | `?size=120`, `400`, or `1000` (default `400`) | Serve a product photo as WebP. Use the `image_url` from a product response. The size is the smallest variant at least as large as the request, capped at 1000. The key is random and unguessable. This route is public because `<img>` tags cannot send the token. Responses include `ETag` and `Cache-Control: public, max-age=86400`, and return 304 when the client's copy is current. |
+| 5 | POST | `auth/password-reset/` | Public | `{email}` | Request a reset link. Same response for known and unknown valid addresses. |
+| 6 | POST | `auth/password-reset/confirm/` | Public | `{token, password, password2}` | Set a new password; consumes the link and revokes existing API tokens. |
+| 7 | POST | `auth/logout/` | Yes | none | Revoke the current token. |
+| 8 | GET | `me/` | Yes | none | Current user: `{id, username, email, is_staff}`. The dashboard shows an **Admin** button, a link to the Django admin, only when `is_staff` is true. |
+| 9 | GET, POST | `products/` | Yes | GET: `?q=`. POST: `{name, price, cost, category, target_stock, supplier}` | List or create products. |
+| 10 | GET, PATCH | `products/<id>/` | Yes | PATCH: fields to change, including `image` | Read or update a product. `image` is a data URL (`data:image/png;base64,...`), or `""` to remove the photo. Accepts PNG, JPEG, WebP, or GIF up to 1 MB. The response carries `image_url` instead of the image data. |
+| 11 | GET, POST | `suppliers/` | Yes | POST: supplier fields | List or create suppliers. |
+| 12 | GET | `customers/` | Yes | none | Customers with order count, spend, last purchase, and products bought. |
+| 13 | GET, POST | `sales/` | Yes | GET: `?status=Paid\|Pending&q=`. POST: `{customer, amount, status, product_id, quantity}` | List or record sales. `product_id` and `quantity` are optional. |
+| 14 | PATCH | `sales/<id>/` | Yes | `{status}` | Mark a sale as Paid or Pending. |
+| 15 | GET, POST | `expenses/` | Yes | GET: `?month=YYYY-MM` (includes category totals). POST: `{category, amount}` | List or record expenses. |
+| 16 | GET | `stock/` | Yes | none | Products with stock level and low-stock flag. |
+| 17 | GET | `batches/` | Yes | `?slow&min_age=45` | Stock batches. `slow` filters to slow stock. |
+| 18 | GET, POST | `purchases/` | Yes | POST: `{product_id, quantity?, unit_cost?}` | List purchase orders, or reorder a product. |
+| 19 | POST | `purchases/<id>/receive/` | Yes | none | Receive an order into stock. |
+| 20 | POST | `receive/` | Yes | `{product_id}` or `{new_product_name, price}`, plus `{quantity, unit_cost, supplier}` and optional `image` (data URL, same limits as above) | Receive stock for an existing or new product. A new-product name matching an existing product adds a batch to that product; an image replaces its photo. Returns the batch and the `product`, which carries `image_url`. |
+| 21 | GET | `dashboard/` | Yes | `?month=YYYY-MM` | KPIs, change against the previous month, weekly sales, top products, and forecast. |
+| 22 | GET | `reports/` | Yes | none | Results month by month. |
+| 23 | GET | `insights/` | Yes | none | Recommendations (see [Recommendations](#recommendations-insights)). |
+| 24 | POST | `assistant/chat/` | Yes | `{question, month?}` | Ask the AI engine. |
+| 25 | POST | `assistant/analyze/` | Yes | `{analysis, month?}` | Run an algorithm analysis listed in [Algorithm analyses](#algorithm-analyses). |
+| 26 | GET, PATCH | `settings/` | Yes | PATCH supports goal, theme, currency, time zone, business profile, inventory thresholds, and notification preferences | Reads or updates owner-scoped settings. Nonempty company names (case and whitespace insensitive) and identical rendered logos must be unique across accounts; conflicts return 409. This is not ownership verification or visual-similarity detection. Currency is a display label only; changing it does not convert stored amounts and requires `confirm_currency_change: true`. `revenue_goal: null` clears the goal. The response includes all preferences, email-verification/delivery status, and progress (null without a goal). Time-zone settings govern API date boundaries. |
+| 27 | GET | `settings/series/` | Yes | none | Chart buckets for the saved revenue goal period, used by the Overview sales chart. Returns `null` when no goal is set. Otherwise returns `{period, target, current, buckets}`. `target` is the goal (a twelfth of it for `year`), `current` is the index of the current bucket, and each bucket has `start`, `end`, and `amount`. Buckets count only Paid sales in the period, with no row limit: each day of the current month, the last 8 Monday-to-Sunday weeks, the last 6 months, or the 12 months of the current year. |
+| 28 | GET | `images/<key>/` | Public | `?size=120`, `400`, or `1000` (default `400`) | Serve a product photo as WebP. Use the `image_url` from a product response. The size is the smallest variant at least as large as the request, capped at 1000. The key is random and unguessable. This route is public because `<img>` tags cannot send the token. Responses include `ETag` and `Cache-Control: public, max-age=86400`, and return 304 when the client's copy is current. |
+| 29 | POST | `settings/verify-email/` | Yes | none | Sends a one-time sign-in link to the current account email; using it marks that address verified. |
+| 30 | POST | `account/confirm/` | Yes | `{action: "export" \| "delete"}` | Emails a short-lived, one-use action link to the verified account email. |
+| 31 | POST | `account/export/` | Email link | `{token, confirmation: "EXPORT"}` | Returns an owner-scoped CSV with `Cache-Control: no-store`; the confirmation token is consumed once. |
+| 32 | POST | `account/delete/` | Email link | `{token, confirmation: "DELETE"}` | Permanently deletes the account and cascaded business data after consuming the one-use email confirmation. |
 
 Paging: `products/`, `sales/`, `expenses/`, `batches/`, and `purchases/` accept `?limit=` and `?offset=`. Responses carry an `X-Total-Count` header with the full count. Without `limit`, `products/`, `batches/`, and `purchases/` return every row, and `sales/` and `expenses/` return at most 500. `limit` is capped at 500. JSON responses are gzip-compressed when the client sends `Accept-Encoding: gzip`. Unexpected server errors return `{"error": ...}` with status 500 and are logged. They are not HTML pages.
 Sales and purchases use the stock rules in [Sales and cost of goods](#sales-and-cost-of-goods).
@@ -371,6 +387,7 @@ All records belong to one user (the owner). Queries never return another user's 
 |---|---|---|
 | `ApiToken` | Session tokens | Stored as a SHA-256 hash. Expires after 30 days. |
 | `MagicLink` | One-time sign-in links | Expires after 15 minutes. Used once. |
+| `PasswordResetToken` | Password reset links | Stores only a SHA-256 hash. Expires after the configured duration and is used once. |
 | `LoginAttempt` | Failed sign-in tracking | Used for the lockout rule. |
 | `TermsAcceptance` | Record of accepted terms | Created at registration. |
 | `Supplier` | Stock suppliers | Name. |
@@ -380,7 +397,9 @@ All records belong to one user (the owner). Queries never return another user's 
 | `Sale` | Sales | Customer, amount, status (Paid or Pending), COGS stored at the time of sale, optional product and quantity. |
 | `Expense` | Expenses | Category, amount, date. |
 | `Purchase` | Purchase orders | Product, quantity, unit cost, status (Ordered or Delivered). |
-| `UserSettings` | Owner preferences | One row per owner. Optional `revenue_goal` (null when unset) and `goal_period` (`day`, `week`, `month`, or `year`; default `month`). Created on first read. |
+| `UserSettings` | Owner preferences | One row per owner: goal, theme, display currency, time zone, business profile, inventory thresholds/reorder assumptions, and verified-email notification choices. |
+| `NotificationState` | Alert deduplication | One row per owner and active alert key; re-arms an alert after its condition is resolved. |
+| `AccountActionToken` | Sensitive account actions | Stores a hash of a short-lived, one-use export/delete email confirmation token; raw tokens are never persisted. |
 
 ---
 
@@ -401,15 +420,22 @@ Set these environment variables before starting the server. The defaults are for
 | `NEXA_ADMIN_LOCAL_ONLY` | `0` | When `1`, `/admin/` answers 404 to requests relayed by a tunnel or proxy (they carry `Cf-Connecting-Ip` or `X-Forwarded-*` headers), so the admin works only from this machine. `.\dev.ps1 -Share` sets it. |
 | `NEXA_DATABASE_URL` | unset (uses `backend/db.sqlite3`) | PostgreSQL connection URL for production. |
 | `NEXA_MEDIA_ROOT` | `backend/media/` | Folder for product photos. Use a persistent disk in production. |
-| `NEXA_EMAIL_BACKEND` | console | Where emails go. In development, links print to the console. |
+| `NEXA_EMAIL_BACKEND` | console in debug; SMTP in production | Email backend. Console output is allowed only in debug. |
+| `NEXA_EMAIL_HOST` | (none) | SMTP host; required for production email. |
+| `NEXA_EMAIL_PORT` | `587` (`465` with SSL) | SMTP port. |
+| `NEXA_EMAIL_USER` | (none) | SMTP authentication user. |
+| `NEXA_EMAIL_PASSWORD` | (none) | SMTP authentication password; keep it in the server secret store. |
+| `NEXA_EMAIL_USE_TLS` | `1` in production | Use STARTTLS. |
+| `NEXA_EMAIL_USE_SSL` | `0` | Use implicit TLS instead of STARTTLS. Do not enable both TLS modes. |
 | `NEXA_FROM_EMAIL` | (see settings) | Sender address for emails. |
+| `NEXA_PASSWORD_RESET_MINUTES` | `30` | Password reset link lifetime, from 5 to 120 minutes. |
 | `NEXA_AI_API_KEY` | (none) | Enables the AI engine. Use a Google Gemini API key. Keep it on the server only. |
 | `NEXA_AI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai/` | OpenAI-compatible endpoint of the AI provider. |
 | `NEXA_AI_MODEL` | `gemini-3.8-flash` | Model used by the AI engine. |
 
 Fixed settings in [settings.py](../backend/nexa/settings.py):
 
-- Time zone: `Africa/Harare`. Month and day boundaries use this zone.
+- Default time zone: `Africa/Harare`; each account can override it for API date boundaries.
 - Sign-in link lifetime: 15 minutes.
 - API token lifetime: 30 days.
 
@@ -423,7 +449,7 @@ Run the backend tests from the `backend` folder:
 python manage.py test
 ```
 
-There are 60 tests. They cover authentication, the sign-in lockout, the assistant and algorithm endpoints, the revenue goal settings, product photos, and related business rules. The tests use a separate test database, so your development data is not changed.
+The tests cover authentication, the sign-in lockout, the assistant and algorithm endpoints, settings, email alerts and account-data actions, product photos, and related business rules. The tests use a separate test database, so your development data is not changed.
 
 Run `python manage.py check` and `python manage.py makemigrations --check` before committing model changes.
 
@@ -434,8 +460,7 @@ Run `python manage.py check` and `python manage.py makemigrations --check` befor
 These are known differences between the code and the browser experience. Each has a clear workaround or fix.
 
 1. **Some pages use in-memory data.** Suppliers are kept in the browser only, and customers are built from the loaded sales list. Their API routes exist, but the browser does not call them yet. Products, stock, slow stock, purchases, and receiving load from the API when the page opens, and their changes are saved.
-2. **Seeded and passwordless accounts cannot sign in through the browser form.** Use the [demo account steps](#demo-accounts) for now.
-3. **Magic-link URLs do not work in the browser.** The link points to `NEXA_FRONTEND_URL`, and the page does not read the `token` parameter. Use the API steps instead.
+2. **Seeded accounts may not have a password.** Sign in with an emailed magic link, or use password reset to set a password.
 4. **Browser sales without a product use an estimated cost.** The 60% COGS estimate applies only when no product is chosen. Choosing a product uses the real batch cost.
 5. **The forecast is simple.** "Next week" uses the last bucket, which covers days 22 to the end of the month. For the current month, figures are partial.
 6. **The AI engine has not been tested end to end with a real key.** The Algorithm engine has been tested through the API and the browser.

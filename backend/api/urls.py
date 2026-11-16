@@ -1,32 +1,14 @@
-from django.urls import path
+from django.urls import include, path
 
-from . import views as v
+from . import views
 
 urlpatterns = [
-    path("auth/register/", v.register),
-    path("auth/login/", v.login),
-    path("auth/request-link/", v.request_link),
-    path("auth/verify/", v.verify_link),
-    path("auth/logout/", v.logout),
-    path("me/", v.me),
-    path("products/", v.products),
-    path("products/<int:pk>/", v.product_detail),
-    path("images/<str:key>/", v.product_image, name="product_image"),
-    path("suppliers/", v.suppliers),
-    path("customers/", v.customers),
-    path("sales/", v.sales),
-    path("sales/<int:pk>/", v.sale_detail),
-    path("expenses/", v.expenses),
-    path("stock/", v.stock),
-    path("batches/", v.batches),
-    path("purchases/", v.purchases),
-    path("purchases/<int:pk>/receive/", v.purchase_receive),
-    path("receive/", v.receive),
-    path("dashboard/", v.dashboard),
-    path("reports/", v.reports),
-    path("insights/", v.insights),
-    path("settings/", v.app_settings),
-    path("settings/series/", v.goal_series),
-    path("assistant/chat/", v.assistant_chat),
-    path("assistant/analyze/", v.assistant_analyze),
+    path("health/live/", views.health_live),
+    path("health/ready/", views.health_ready),
+    path("", include("api.auth.urls")),
+    path("", include("api.catalog.urls")),
+    path("", include("api.sales.urls")),
+    path("", include("api.inventory.urls")),
+    path("", include("api.reporting.urls")),
+    path("", include("api.insights.urls")),
 ]

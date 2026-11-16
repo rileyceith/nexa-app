@@ -1,3 +1,7 @@
+from decimal import Decimal
+from hashlib import sha256
+import unicodedata
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -5,8 +9,21 @@ from django.utils import timezone
 Owner = settings.AUTH_USER_MODEL
 
 
+def business_name_fingerprint(name):
+    normalized = " ".join(unicodedata.normalize("NFKC", name).split()).casefold()
+    return sha256(normalized.encode("utf-8")).hexdigest() if normalized else None
+
+
 class MagicLink(models.Model):
     email = models.EmailField()
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class PasswordResetToken(models.Model):
+    owner = models.ForeignKey(Owner, on_delete=models.CASCADE, related_name="password_reset_tokens")
     token_hash = models.CharField(max_length=64, unique=True)
     expires_at = models.DateTimeField()
     used_at = models.DateTimeField(null=True, blank=True)
@@ -172,7 +189,102 @@ class UserSettings(models.Model):
     MONTH = "month"
     YEAR = "year"
     PERIODS = [(DAY, "Day"), (WEEK, "Week"), (MONTH, "Month"), (YEAR, "Year")]
+    CURRENCY_CHOICES = [
+        ("USD", "USD"),
+        ("ZWL", "ZWL"),
+        ("ZAR", "ZAR"),
+        ("EUR", "EUR"),
+        ("GBP", "GBP"),
+    ]
 
     owner = models.OneToOneField(Owner, on_delete=models.CASCADE, related_name="preferences")
     revenue_goal = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     goal_period = models.CharField(max_length=10, choices=PERIODS, default=MONTH)
+    theme = models.CharField(max_length=5, choices=[("light", "Light"), ("dark", "Dark")], default="light")
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default="USD")
+    time_zone = models.CharField(max_length=64, default="Africa/Harare")
+    business_name = models.CharField(max_length=120, blank=True)
+    business_name_fingerprint = models.CharField(max_length=64, unique=True, null=True, editable=False)
+    business_logo_key = models.CharField(max_length=32, blank=True, default="")
+    business_logo_fingerprint = models.CharField(max_length=64, unique=True, null=True, editable=False)
+    business_logo_zoom = models.PositiveSmallIntegerField(default=100)
+    business_logo_x = models.SmallIntegerField(default=0)
+    business_logo_y = models.SmallIntegerField(default=0)
+    business_email = models.EmailField(blank=True)
+    business_phone = models.CharField(max_length=32, blank=True)
+    low_stock_threshold = models.DecimalField(max_digits=4, decimal_places=3, default=Decimal("0.350"))
+    slow_stock_days = models.PositiveSmallIntegerField(default=45)
+    reorder_lead_days = models.PositiveSmallIntegerField(default=14)
+    safety_stock_days = models.PositiveSmallIntegerField(default=7)
+    reorder_target_days = models.PositiveSmallIntegerField(default=30)
+    email_verified = models.BooleanField(default=False)
+    notify_low_stock = models.BooleanField(default=False)
+    notify_slow_stock = models.BooleanField(default=False)
+    notify_goal_reached = models.BooleanField(default=False)
+
+    def save(self, *args, **kwargs):
+        update_fields = kwargs.get("update_fields")
+        if update_fields is None or "business_name" in update_fields:
+            self.business_name_fingerprint = business_name_fingerprint(self.business_name)
+            if update_fields is not None:
+                kwargs["update_fields"] = set(update_fields) | {"business_name_fingerprint"}
+        super().save(*args, **kwargs)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(low_stock_threshold__gte=Decimal("0.01"))
+                & models.Q(low_stock_threshold__lte=Decimal("1.000")),
+                name="settings_low_stock_threshold_range",
+            ),
+            models.CheckConstraint(condition=models.Q(slow_stock_days__gte=1), name="settings_slow_stock_days_positive"),
+            models.CheckConstraint(
+                condition=models.Q(business_logo_zoom__gte=100, business_logo_zoom__lte=300),
+                name="settings_logo_zoom_range",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(business_logo_x__gte=-100, business_logo_x__lte=100),
+                name="settings_logo_x_range",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(business_logo_y__gte=-100, business_logo_y__lte=100),
+                name="settings_logo_y_range",
+            ),
+        ]
+
+
+class NotificationState(models.Model):
+    owner = models.ForeignKey(Owner, on_delete=models.CASCADE, related_name="notification_states")
+    key = models.CharField(max_length=100)
+    active = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["owner", "key"], name="uniq_notification_state_per_owner"),
+        ]
+
+
+class NotificationDelivery(models.Model):
+    owner = models.ForeignKey(Owner, on_delete=models.CASCADE, related_name="notification_deliveries")
+    email = models.EmailField()
+    currency = models.CharField(max_length=3)
+    time_zone = models.CharField(max_length=64)
+    messages = models.JSONField()
+    available_at = models.DateTimeField(default=timezone.now, db_index=True)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    lease_token = models.CharField(max_length=32, blank=True, default="")
+    attempts = models.PositiveIntegerField(default=0)
+
+
+class AccountActionToken(models.Model):
+    EXPORT = "export"
+    DELETE = "delete"
+    ACTIONS = [(EXPORT, "Export"), (DELETE, "Delete")]
+
+    owner = models.ForeignKey(Owner, on_delete=models.CASCADE, related_name="account_action_tokens")
+    action = models.CharField(max_length=8, choices=ACTIONS)
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)

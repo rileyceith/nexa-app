@@ -25,3 +25,6 @@ ios/App/Podfile.lock
 # Operating system files
 .DS_Store
 Thumbs.db
+
+.fake
+.neon
