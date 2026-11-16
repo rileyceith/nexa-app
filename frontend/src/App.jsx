@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { ADMIN_URL, API, TOKEN_KEY } from "./api/client.js";
 import { AuthSheet, RecordSheet } from "./components/index.jsx";
 import { shrinkImage } from "./features/inventory/images.js";
+import AccountSettings from "./features/settings/AccountSettings.jsx";
 import { currentUser, logout, resetPassword, verifyMagicLink } from "./features/auth/api.js";
 import { listProducts } from "./features/catalog/api.js";
 import { createExpense, createSale, listExpenses, listSales } from "./features/sales/api.js";
@@ -151,6 +152,7 @@ function GoalTrend({ buckets, current, target, label }) {
 const PRODUCTS = [];
 const NAV = [
   ['overview', 'Overview', 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z', 'How your business is doing'],
+  ['account', 'Account', 'M20 21a8 8 0 00-16 0M12 12a4 4 0 100-8 4 4 0 000 8z', 'Your profile and security'],
   ['settings', 'Settings', IC.settings, 'Manage your preferences'],
   ['sales', 'Sales', IC.receipt, 'Every sale you have recorded'],
   ['products', 'Products', 'M20 12l-8 8-9-9V3h8zM7.5 7.5h.01', 'Prices, margins and what sells most'],
@@ -704,9 +706,16 @@ function Dashboard({ setTheme, onExit }) {
       </>
     ),
 
+    account: () => (
+      <AccountSettings preferences={preferences} onEmailChange={setAccountEmail} onSignOut={onExit} />
+    ),
+
     settings: () => (
       <>
+        <div className='settings-intro'><div><span className='account-kicker'>PERSONALISE NEXA</span>
+          <h2>Settings that fit your business</h2><p>Manage your account, preferences and business details.</p></div></div>
         <nav className='settings-categories' aria-label='Settings categories'>
+          <button type='button' onClick={() => setNav('account')}>Account</button>
           <a href='#settings-appearance'>Appearance</a>
           <a href='#settings-business'>Business</a>
           <a href='#settings-inventory'>Inventory</a>
@@ -1382,7 +1391,7 @@ function Dashboard({ setTheme, onExit }) {
             <div><h1>{cur[1]}</h1><p>{preferences.business_name ? `${preferences.business_name} · ${cur[3]}` : cur[3]}</p></div>
             <div className='ntools'>
               {showMonth && <Month />}
-              {nav !== 'settings' && <>
+              {nav !== 'settings' && nav !== 'account' && <>
                 <button className='btn iri nbtn' onClick={() => setForm('sale')}>+ Sale</button>
                 <button className='btn glass nbtn' onClick={() => setForm('expense')}>+ Expense</button>
               </>}

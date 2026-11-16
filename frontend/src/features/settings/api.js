@@ -6,6 +6,10 @@ export const getGoalSeries = (token) => call("/settings/series/", null, token);
 export const verifySettingsEmail = (token) => call("/settings/verify-email/", {}, token);
 export const requestAccountConfirmation = (action, token) => call("/account/confirm/", { action }, token);
 export const deleteAccount = (token, confirmation) => call("/account/delete/", { token, confirmation });
+export const updateAccountProfile = (data, token) => call("/account/profile/", data, token, "PATCH");
+export const listAccountSessions = (token) => call("/account/sessions/", null, token);
+export const requestSecurityCode = (data, token) => call("/account/security/request/", data, token);
+export const confirmSecurityCode = (data, token) => call("/account/security/confirm/", data, token);
 
 export async function exportAccountData(token, confirmation) {
   if (!API) throw new Error("The mobile app's server address has not been configured.");

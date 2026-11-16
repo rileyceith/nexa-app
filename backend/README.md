@@ -56,6 +56,10 @@ Requests are limited to three per email address and 20 per IP address per hour.
 | POST | `auth/password-reset/confirm/` `{token, password, password2}` | Set a new password and revoke existing API tokens |
 | POST | `auth/logout/` | Revoke the current token |
 | GET | `me/` | Current user: `{id, username, email, is_staff}`. The dashboard shows an **Admin** button (a link to `/admin/`) only when `is_staff` is true |
+| PATCH | `account/profile/` `{username}` | Change the account username |
+| GET | `account/sessions/` | List this account's active sessions, including the current session |
+| POST | `account/security/request/` `{action, target}` | Send a security code to the verified current account email for `email`, `password`, or `device`; target is the new email or session ID |
+| POST | `account/security/confirm/` `{action, code, password, password2}` | Confirm a security code; email changes require a second code sent to the new address |
 | GET, POST | `products/` | List (`?q=`) / create `{name, price, cost, category, target_stock, supplier}` |
 | GET, PATCH | `products/<id>/` | Read / update (`image` sets or clears the photo, 1 MB max). Responses carry `image_url` instead of the image data |
 | GET | `images/<key>/?size=120\|400\|1000` | Public WebP product photo. Use the `image_url` from a product. Default size 400 |
@@ -82,6 +86,14 @@ Requests are limited to three per email address and 20 per IP address per hour.
 | POST | `account/delete/` `{token, confirmation: "DELETE"}` | Permanently delete the account and its associated data after email re-authentication |
 
 Settings are private to each owner. Set `business_name` and optionally `business_logo` (a PNG, JPEG, WebP or GIF data URL of up to 1 MB) through `PATCH /api/settings/`; set `business_logo` to `""` to remove it. The response includes `business_logo_url`. As with product photos, logo images are served through a public, unguessable image URL; do not upload sensitive images. The logo is stored in the configured media storage and deleted when replaced, removed, or the account is deleted. CSV exports do not include image files. Currency changes only change the display label and do not convert stored amounts. Inventory thresholds affect stock warnings and reorder/aging analyses. Email alerts are opt-in, require a verified account email and secure SMTP configuration, and are deduplicated until the triggering condition is resolved. Aged-stock alerts are checked on app requests; this deployment has no scheduler.
+
+Account security codes require a verified current email and configured delivery. Codes expire in
+10 minutes, permit at most five incorrect attempts, and are bound to the requesting session and
+action. Requests are limited to five per account per hour. Email changes also verify the new
+address and sign out other sessions; password changes sign out all sessions. Previously issued
+reset, sign-in and account-action links are invalidated. Session browser details are collected
+at sign-in; sessions created before this feature show as unknown. Do not rely on browser labels
+as verified device identities.
 
 Logo framing is saved with the business settings: `business_logo_zoom` is an integer from 100 to 300 percent, and `business_logo_x` and `business_logo_y` are integer offsets from -100 to 100 percent of the frame. Positive offsets move the image right and down. These adjustments apply to both desktop and mobile without altering the stored image.
 
@@ -115,6 +127,7 @@ Unexpected server errors return `{"error": ...}` with status 500 and are logged 
 `NEXA_EMAIL_HOST`, `NEXA_EMAIL_PORT` (587 by default; 465 with SSL), `NEXA_EMAIL_USER`,
 `NEXA_EMAIL_PASSWORD`, `NEXA_EMAIL_USE_TLS` (on by default in production),
 `NEXA_EMAIL_USE_SSL` (off by default; do not enable together with TLS), `NEXA_FROM_EMAIL`,
+`NEXA_RESEND_API_KEY` (private Resend sending-only API key when using the Resend backend),
 `NEXA_PASSWORD_RESET_MINUTES` (30 by default; allowed range 5–120),
 `NEXA_DATABASE_URL` (PostgreSQL URL; SQLite `db.sqlite3` is used when unset), `NEXA_MEDIA_ROOT` (folder for product photos; default `media/` in the backend folder).
 
@@ -123,6 +136,14 @@ not load that file automatically. Configure the same value as `NEXA_DATABASE_URL
 provider's secret environment settings. Do not commit the file or print the connection string.
 Connecting a new database does not transfer existing SQLite accounts or data; back up and migrate
 them separately before switching. Neon Auth does not replace Nexa's existing authentication.
+
+For HTTPS email delivery on Render, set `NEXA_EMAIL_BACKEND=anymail.backends.resend.EmailBackend`,
+`NEXA_RESEND_API_KEY` to a Resend sending-only API key, and `NEXA_FROM_EMAIL` to a sender
+permitted by Resend. These settings apply to sign-in links, password resets, account confirmations,
+and alerts. Resend's `onboarding@resend.dev` test sender can only send to the account owner's
+email. To send to other users, verify a domain you control in Resend and use an address on that
+domain. Keep the key in hosting secrets. Provider acceptance does not guarantee inbox delivery;
+check the provider's delivery logs. Disable click tracking for authentication links.
 
 For local testing with a migrated Neon database and images kept on this computer, run
 `python start_neon_local.py` from `backend`. It uses `DATABASE_URL` from the root `.env.local`
@@ -160,7 +181,7 @@ category comparisons, and product revenue rankings.
   ```
 
 - Add `api.Nexa-app.com` as a custom domain in Render, then add the CNAME record it shows at your DNS provider.
-- Configure SMTP credentials with Render secrets before enabling email verification or alerts. Production defaults to SMTP, never console logging; email-dependent features return an explicit error if delivery is unavailable. Password sign-in works without email.
+- Configure authenticated TLS SMTP or the Resend HTTPS backend with Render secrets before enabling email features. Production defaults to SMTP, never console logging; password reset requests remain generic even when delivery fails. Password sign-in works without email.
 
 **Frontend (Cloudflare Pages)**
 

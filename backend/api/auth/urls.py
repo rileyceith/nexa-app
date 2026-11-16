@@ -11,4 +11,8 @@ urlpatterns = [
     path("auth/password-reset/confirm/", v.reset_password),
     path("auth/logout/", v.logout),
     path("me/", v.me),
+    path("account/profile/", v.account_profile),
+    path("account/sessions/", v.account_sessions),
+    path("account/security/request/", v.account_security_request),
+    path("account/security/confirm/", v.account_security_confirm),
 ]

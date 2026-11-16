@@ -118,6 +118,55 @@ class ApiTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertFalse(m.MagicLink.objects.filter(email="new@example.com").exists())
 
+    def test_resend_requires_api_key_and_explicit_sender(self):
+        with override_settings(
+            DEBUG=False, EMAIL_BACKEND="anymail.backends.resend.EmailBackend",
+            RESEND_API_KEY="", DEFAULT_FROM_EMAIL="Nexa <onboarding@resend.dev>",
+        ):
+            self.assertFalse(svc.email_delivery_configured())
+            with override_settings(RESEND_API_KEY="test-key", DEFAULT_FROM_EMAIL="Nexa <no-reply@nexa.local>"):
+                self.assertFalse(svc.email_delivery_configured())
+            with override_settings(RESEND_API_KEY="test-key"):
+                self.assertTrue(svc.email_delivery_configured())
+
+    @override_settings(
+        DEBUG=False, EMAIL_BACKEND="anymail.backends.resend.EmailBackend",
+        RESEND_API_KEY="test-key", DEFAULT_FROM_EMAIL="Nexa <onboarding@resend.dev>",
+    )
+    @patch("requests.sessions.Session.request")
+    def test_resend_sends_magic_link_over_https(self, request):
+        import requests
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b'{"id":"test-message"}'
+        request.return_value = response
+        result = self.post("/api/auth/request-link/", {"email": "new@example.com"}, {})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(request.call_args.kwargs["url"], "https://api.resend.com/emails")
+        self.assertEqual(request.call_args.kwargs["method"], "POST")
+        self.assertTrue(m.MagicLink.objects.filter(email="new@example.com").exists())
+
+    @override_settings(
+        DEBUG=False, EMAIL_BACKEND="anymail.backends.resend.EmailBackend",
+        RESEND_API_KEY="test-key", DEFAULT_FROM_EMAIL="Nexa <onboarding@resend.dev>",
+    )
+    @patch("requests.sessions.Session.request")
+    def test_resend_failures_clean_up_tokens_and_keep_reset_generic(self, request):
+        import requests
+        response = requests.Response()
+        response.status_code = 403
+        response.reason = "Forbidden"
+        response._content = b'{"message":"sensitive provider detail"}'
+        request.return_value = response
+        with self.assertLogs("api.services", level="ERROR") as logs:
+            magic = self.post("/api/auth/request-link/", {"email": "new@example.com"}, {})
+            reset = self.post("/api/auth/password-reset/", {"email": self.user.email}, {})
+        self.assertEqual(magic.status_code, 503)
+        self.assertEqual(reset.status_code, 200)
+        self.assertFalse(m.MagicLink.objects.filter(email="new@example.com").exists())
+        self.assertFalse(m.PasswordResetToken.objects.filter(owner=self.user).exists())
+        self.assertNotIn("sensitive provider detail", "\n".join(logs.output))
+
     @patch("api.services.email_delivery_configured", return_value=True)
     def test_password_reset_request_is_generic_and_emails_only_existing_accounts(self, email_configured):
         response = self.post("/api/auth/password-reset/", {"email": self.user.email}, {})

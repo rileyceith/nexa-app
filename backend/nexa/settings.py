@@ -154,8 +154,7 @@ if MEDIA_STORAGE == "r2":
     }
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# Email links may be written to the console only in development. Production uses SMTP
-# and must provide authenticated TLS or implicit SSL settings.
+# Email links may be written to the console only in development.
 EMAIL_BACKEND = os.environ.get(
     "NEXA_EMAIL_BACKEND",
     "django.core.mail.backends.console.EmailBackend" if DEBUG else "django.core.mail.backends.smtp.EmailBackend",
@@ -165,6 +164,8 @@ EMAIL_USE_SSL = os.environ.get("NEXA_EMAIL_USE_SSL", "0") == "1"
 EMAIL_PORT = int(os.environ.get("NEXA_EMAIL_PORT", "465" if EMAIL_USE_SSL else "587"))
 EMAIL_HOST_USER = os.environ.get("NEXA_EMAIL_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("NEXA_EMAIL_PASSWORD", "")
+RESEND_API_KEY = os.environ.get("NEXA_RESEND_API_KEY", "")
+ANYMAIL_REQUESTS_TIMEOUT = 15
 EMAIL_TIMEOUT = 15
 EMAIL_USE_TLS = os.environ.get("NEXA_EMAIL_USE_TLS", "0" if DEBUG or EMAIL_USE_SSL else "1") == "1"
 if EMAIL_USE_TLS and EMAIL_USE_SSL:

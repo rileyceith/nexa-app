@@ -26,6 +26,7 @@ from .insights import assistant as ai
 from . import images
 from . import models as m
 from . import services as svc
+from . import account_security
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +283,7 @@ def reset_password(request):
 
 @api("POST", auth=False)
 def verify_link(request):
-    user, key = svc.verify_magic_link(text(request.data, "token", maxlen=200))
+    user, key = svc.verify_magic_link(text(request.data, "token", maxlen=200), request.headers.get("User-Agent", ""))
     response = ok({"token": key, "user": {"id": user.id, "email": user.email}})
     response["Cache-Control"] = "no-store, private"
     return response
@@ -301,6 +302,7 @@ def register(request):
         text(d, "username", maxlen=30), text(d, "email", maxlen=254),
         d.get("password") if isinstance(d.get("password"), str) else "",
         d.get("password2") if isinstance(d.get("password2"), str) else None, d.get("accepted_terms"),
+        request.headers.get("User-Agent", ""),
     )
     return _session(user, key, 201)
 
@@ -308,7 +310,10 @@ def register(request):
 @api("POST", auth=False)
 def login(request):
     d = request.data
-    user, key = svc.login(text(d, "username", maxlen=150), d.get("password") if isinstance(d.get("password"), str) else "")
+    user, key = svc.login(
+        text(d, "username", maxlen=150), d.get("password") if isinstance(d.get("password"), str) else "",
+        request.headers.get("User-Agent", ""),
+    )
     return _session(user, key)
 
 
@@ -321,6 +326,53 @@ def logout(request):
 @api("GET")
 def me(request):
     return ok({"id": request.owner.id, "username": request.owner.username, "email": request.owner.email, "is_staff": request.owner.is_staff})
+
+
+@api("PATCH", max_body=2048)
+def account_profile(request):
+    username = account_security.change_username(request.owner, text(request.data, "username", maxlen=30))
+    response = ok({"username": username, "email": request.owner.email})
+    response["Cache-Control"] = "no-store, private"
+    return response
+
+
+@api("GET")
+def account_sessions(request):
+    current = svc._hash(request.headers["Authorization"][7:])
+    sessions = m.ApiToken.objects.filter(
+        user=request.owner, expires_at__gt=timezone.now(),
+    ).order_by("-created_at").values("id", "created_at", "expires_at", "user_agent", "key_hash")
+    response = ok([{
+        "id": session["id"], "created_at": session["created_at"], "expires_at": session["expires_at"],
+        "device": session["user_agent"] or "Unknown device", "current": session["key_hash"] == current,
+    } for session in sessions])
+    response["Cache-Control"] = "no-store, private"
+    return response
+
+
+@api("POST", max_body=2048)
+def account_security_request(request):
+    account_security.request_code(
+        request.owner, request.headers["Authorization"][7:],
+        text(request.data, "action", maxlen=20), text(request.data, "target", maxlen=254),
+    )
+    response = ok({"detail": "A security code was sent to your current email address."})
+    response["Cache-Control"] = "no-store, private"
+    return response
+
+
+@api("POST", max_body=4096)
+def account_security_confirm(request):
+    data = request.data
+    result = account_security.confirm_code(
+        request.owner, request.headers["Authorization"][7:],
+        text(data, "action", maxlen=20), text(data, "code", maxlen=6),
+        data.get("password") if isinstance(data.get("password"), str) else "",
+        data.get("password2") if isinstance(data.get("password2"), str) else "",
+    )
+    response = ok({"status": result})
+    response["Cache-Control"] = "no-store, private"
+    return response
 
 
 # ---------- catalogue ----------

@@ -46,6 +46,19 @@ class ApiToken(models.Model):
     key_hash = models.CharField(max_length=64, unique=True)
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
+    user_agent = models.CharField(max_length=180, blank=True, default="", db_default="")
+
+
+class AccountSecurityChallenge(models.Model):
+    owner = models.ForeignKey(Owner, on_delete=models.CASCADE)
+    session = models.ForeignKey(ApiToken, on_delete=models.CASCADE)
+    action = models.CharField(max_length=20)
+    target = models.CharField(max_length=254, blank=True)
+    email_snapshot = models.EmailField()
+    stage = models.CharField(max_length=8, default="current")
+    code_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
 
 
 class Supplier(models.Model):

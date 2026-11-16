@@ -6,3 +6,4 @@ Pillow>=11.0
 django-storages[s3]>=1.14
 redis>=5.0
 python-dotenv>=1.0
+django-anymail>=14.0

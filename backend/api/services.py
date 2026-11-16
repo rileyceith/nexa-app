@@ -7,6 +7,7 @@ from calendar import monthrange
 from datetime import date, timedelta
 from decimal import Decimal
 
+from anymail.exceptions import AnymailError
 from django.conf import settings
 from django.core.cache import cache
 from django.contrib.auth import authenticate, get_user_model
@@ -44,6 +45,14 @@ def _hash(value):
 
 # ---------- auth ----------
 
+def _send_email(*args, **kwargs):
+    try:
+        return send_mail(*args, **kwargs)
+    except AnymailError as error:
+        status = error.status_code
+        raise OSError(f"Email provider request failed (HTTP status: {status}).") from None
+
+
 def send_magic_link(email):
     if not email_delivery_configured():
         raise ServiceError("Secure email delivery is not configured.", 503)
@@ -57,7 +66,7 @@ def send_magic_link(email):
         expires_at=timezone.now() + timedelta(minutes=settings.MAGIC_LINK_MINUTES),
     )
     try:
-        sent = send_mail(
+        sent = _send_email(
             "Your Nexa sign-in link",
             f"Open this link to sign in to Nexa (valid {settings.MAGIC_LINK_MINUTES} minutes):\n\n"
             f"{settings.FRONTEND_URL}#token={token}\n\nIf you did not ask for this, ignore this email.",
@@ -107,7 +116,7 @@ def request_password_reset(email, remote_addr=""):
         expires_at=now + timedelta(minutes=settings.PASSWORD_RESET_MINUTES),
     )
     try:
-        sent = send_mail(
+        sent = _send_email(
             "Reset your Nexa password",
             f"Open this link to reset your Nexa password (valid {settings.PASSWORD_RESET_MINUTES} minutes):\n\n"
             f"{settings.FRONTEND_URL}#password_reset={token}\n\n"
@@ -161,7 +170,7 @@ def initialize_business_data(user):
 
 
 @transaction.atomic
-def verify_magic_link(token):
+def verify_magic_link(token, user_agent=""):
     link = m.MagicLink.objects.select_for_update().filter(token_hash=_hash(token)).first()
     if not link or link.used_at or link.expires_at < timezone.now():
         raise ServiceError("This sign-in link is invalid or has expired.", 400)
@@ -189,13 +198,13 @@ def verify_magic_link(token):
             prefs.save(update_fields=["email_verified"])
     link.used_at = timezone.now()
     link.save(update_fields=["used_at"])
-    return user, issue_token(user)
+    return user, issue_token(user, user_agent)
 
 
 TERMS_VERSION = "1"
 
 
-def register(username, email, password, password2, accepted_terms):
+def register(username, email, password, password2, accepted_terms, user_agent=""):
     username = (username or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]{3,30}", username):
         raise ServiceError("Username must be 3 to 30 ASCII letters, numbers, dots, dashes or underscores.")
@@ -220,14 +229,14 @@ def register(username, email, password, password2, accepted_terms):
             user = User.objects.create_user(username=username, email=email, password=password)
             initialize_business_data(user)
             m.TermsAcceptance.objects.create(user=user, version=TERMS_VERSION)
-            return user, issue_token(user)
+            return user, issue_token(user, user_agent)
     except IntegrityError:
         if User.objects.filter(username__iexact=username).exists() or users_with_email(email).exists():
             raise ServiceError("That username or email is already in use. Please sign in.", 409)
         raise
 
 
-def login(username, password):
+def login(username, password, user_agent=""):
     username = (username or "").strip()
     since = timezone.now() - timedelta(minutes=15)
     if m.LoginAttempt.objects.filter(username__iexact=username, created_at__gte=since).count() >= 5:
@@ -238,13 +247,14 @@ def login(username, password):
         m.LoginAttempt.objects.create(username=username[:150])
         raise ServiceError("Incorrect username or password.", 401)
     m.LoginAttempt.objects.filter(username__iexact=username).delete()
-    return user, issue_token(user)
+    return user, issue_token(user, user_agent)
 
 
-def issue_token(user):
+def issue_token(user, user_agent=""):
     key = secrets.token_urlsafe(40)
     m.ApiToken.objects.create(
-        user=user, key_hash=_hash(key), expires_at=timezone.now() + timedelta(days=settings.API_TOKEN_DAYS)
+        user=user, key_hash=_hash(key), expires_at=timezone.now() + timedelta(days=settings.API_TOKEN_DAYS),
+        user_agent=user_agent[:180],
     )
     return key
 
@@ -663,7 +673,7 @@ def _send_email_notifications(owner_id, email, currency, timezone_name, messages
 def deliver_email_notifications(email, currency, timezone_name, messages):
     if not email_delivery_configured():
         raise OSError("Secure email delivery is not configured.")
-    sent = send_mail(
+    sent = _send_email(
         "Nexa business alerts",
         f"Your Nexa alerts ({currency}, {timezone_name}):\n\n"
         + "\n".join(f"- {item}" for item in messages.values()),
@@ -730,7 +740,7 @@ def request_account_action(owner, action):
     )
     link = f"{settings.FRONTEND_URL}#account_action={action}&token={token}"
     try:
-        sent = send_mail(
+        sent = _send_email(
             "Confirm your Nexa account action",
             f"Open this link to confirm your Nexa {action} request. The link expires in 10 minutes:\n\n"
             f"{link}\n\nIf you did not request this, ignore this email.",
@@ -769,6 +779,12 @@ def email_delivery_configured():
         "django.core.mail.backends.locmem.EmailBackend",
     ):
         return True
+    if settings.EMAIL_BACKEND == "anymail.backends.resend.EmailBackend":
+        return bool(
+            settings.RESEND_API_KEY
+            and settings.DEFAULT_FROM_EMAIL
+            and settings.DEFAULT_FROM_EMAIL != "Nexa <no-reply@nexa.local>"
+        )
     return (
         settings.EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend"
         and bool(settings.EMAIL_HOST and settings.EMAIL_HOST_USER and settings.EMAIL_HOST_PASSWORD)
