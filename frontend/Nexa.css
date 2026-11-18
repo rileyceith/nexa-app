@@ -386,6 +386,17 @@ body.inapp{background:radial-gradient(900px 560px at 12% 6%,#e6dedc,transparent 
 .algorithm-empty{padding:14px;border-radius:6px;background:var(--tint)}
 .algorithm-empty p{margin:0}
 
+/* compact device/session selector */
+.signed-devices{list-style:none;padding:0;margin:12px 0 0;display:grid;gap:8px}
+.signed-devices li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 12px;background:var(--tint);border-radius:6px;font-size:13px}
+.device-info{display:grid;gap:2px;min-width:0}
+.device-info strong{font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.device-info span{font-size:11px;color:var(--muted)}
+.device-actions{display:flex;gap:6px}
+.device-actions button{padding:4px 10px;font-size:11px;border:1px solid var(--rule);border-radius:4px;background:var(--surface);color:var(--ink);cursor:pointer;transition:background .15s,border-color .15s}
+.device-actions button:hover{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.device-actions button:disabled{opacity:.5;cursor:default;background:var(--surface);color:var(--ink)}
+
 @keyframes fade{from{opacity:0}}
 @keyframes rise{from{opacity:0;transform:translateY(10px)}}
 @keyframes fadeOut{to{opacity:0}}

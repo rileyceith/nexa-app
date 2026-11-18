@@ -740,14 +740,16 @@ function Dashboard({ setTheme, onExit, workspaces = [], onWorkspaceChange, works
         <form className='dgrid settings-form' onSubmit={savePreferences}>
           <fieldset className='permission-locked' disabled={!canEdit('settings')}>
           <h2 className='settings-heading span3' id='settings-appearance'>Appearance</h2>
-          <section className='dc span3'>
-            <Title ic={IC.settings}>Theme</Title>
-            <p>Theme changes are saved immediately.</p>
-            <label>Theme
-              <select value={preferences.theme} onChange={saveTheme} disabled={themeBusy}>
+          <section className='dc'>
+            <div className='theme-compact'>
+              <div>
+                <label htmlFor='theme-select' className='theme-label'>Theme</label>
+                <p className='theme-desc'>Changes save immediately</p>
+              </div>
+              <select id='theme-select' className='theme-select' value={preferences.theme} onChange={saveTheme} disabled={themeBusy}>
                 <option value='light'>Light</option><option value='dark'>Dark</option>
               </select>
-            </label>
+            </div>
             {themeMsg.text && <p className={themeMsg.error ? 'nerr' : 'nok'} role={themeMsg.error ? 'alert' : 'status'}>{themeMsg.text}</p>}
           </section>
           <h2 className='settings-heading span3' id='settings-business'>Business</h2>
