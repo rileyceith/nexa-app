@@ -8,6 +8,14 @@ from django.utils import timezone
 
 Owner = settings.AUTH_USER_MODEL
 
+TEAM_PERMISSION_SCOPES = (
+    "dashboard", "sales", "inventory", "customers", "expenses", "reports", "insights", "settings",
+)
+
+
+def default_team_permissions():
+    return {scope: {"view": False, "edit": False} for scope in TEAM_PERMISSION_SCOPES}
+
 
 def business_name_fingerprint(name):
     normalized = " ".join(unicodedata.normalize("NFKC", name).split()).casefold()
@@ -231,6 +239,7 @@ class UserSettings(models.Model):
     safety_stock_days = models.PositiveSmallIntegerField(default=7)
     reorder_target_days = models.PositiveSmallIntegerField(default=30)
     email_verified = models.BooleanField(default=False)
+    team_sharing_enabled = models.BooleanField(default=False)
     notify_low_stock = models.BooleanField(default=False)
     notify_slow_stock = models.BooleanField(default=False)
     notify_goal_reached = models.BooleanField(default=False)
@@ -301,3 +310,31 @@ class AccountActionToken(models.Model):
     expires_at = models.DateTimeField()
     used_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class TeamMembership(models.Model):
+    owner = models.ForeignKey(Owner, on_delete=models.CASCADE, related_name="team_members")
+    member = models.ForeignKey(Owner, on_delete=models.CASCADE, related_name="business_memberships")
+    permissions = models.JSONField(default=default_team_permissions)
+    can_manage_members = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["owner", "member"], name="uniq_team_membership"),
+            models.CheckConstraint(condition=~models.Q(owner=models.F("member")), name="team_member_not_owner"),
+        ]
+
+
+class TeamInvitation(models.Model):
+    owner = models.ForeignKey(Owner, on_delete=models.CASCADE, related_name="team_invitations")
+    email = models.EmailField()
+    token_hash = models.CharField(max_length=64, unique=True)
+    permissions = models.JSONField(default=default_team_permissions)
+    can_manage_members = models.BooleanField(default=False)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["owner", "email", "expires_at"], name="team_invite_owner_email_idx")]

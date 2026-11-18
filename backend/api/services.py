@@ -204,7 +204,7 @@ def verify_magic_link(token, user_agent=""):
 TERMS_VERSION = "1"
 
 
-def register(username, email, password, password2, accepted_terms, user_agent=""):
+def register(username, email, password, password2, accepted_terms, user_agent="", team_sharing_enabled=False):
     username = (username or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]{3,30}", username):
         raise ServiceError("Username must be 3 to 30 ASCII letters, numbers, dots, dashes or underscores.")
@@ -217,6 +217,8 @@ def register(username, email, password, password2, accepted_terms, user_agent=""
         raise ServiceError("The passwords do not match.")
     if accepted_terms is not True:
         raise ServiceError("You must accept the terms and conditions.")
+    if not isinstance(team_sharing_enabled, bool):
+        raise ServiceError("Choose whether to enable team sharing.")
     User = get_user_model()
     if User.objects.filter(username__iexact=username).exists() or users_with_email(email).exists():
         raise ServiceError("That username or email is already in use. Please sign in.", 409)
@@ -228,6 +230,8 @@ def register(username, email, password, password2, accepted_terms, user_agent=""
         with transaction.atomic():
             user = User.objects.create_user(username=username, email=email, password=password)
             initialize_business_data(user)
+            if team_sharing_enabled:
+                m.UserSettings.objects.filter(owner=user).update(team_sharing_enabled=True)
             m.TermsAcceptance.objects.create(user=user, version=TERMS_VERSION)
             return user, issue_token(user, user_agent)
     except IntegrityError:

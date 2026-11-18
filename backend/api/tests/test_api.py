@@ -22,7 +22,7 @@ from django.core.cache.backends.db import DatabaseCache
 from django.core import mail
 from django.core.management import call_command
 from django.db import IntegrityError, OperationalError, connection, transaction
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from PIL import Image
@@ -86,6 +86,16 @@ class ApiTests(TestCase):
 
     def test_requires_auth(self):
         self.assertEqual(self.client.get("/api/products/").status_code, 401)
+
+    @override_settings(ALLOWED_HOSTS=["testserver"])
+    def test_admin_login_uses_csrf_while_bearer_api_auth_does_not(self):
+        csrf_client = Client(enforce_csrf_checks=True)
+        admin_post = csrf_client.post(
+            "/admin/login/", {"username": self.user.username, "password": "irrelevant"},
+        )
+        self.assertEqual(admin_post.status_code, 403)
+        api_response = csrf_client.get("/api/me/", **self.h)
+        self.assertEqual(api_response.status_code, 200)
 
     def test_health_checks_report_dependency_failure_without_details(self):
         live = self.client.get("/api/health/live/")
@@ -680,6 +690,7 @@ class ApiTests(TestCase):
         r = self.client.options("/api/sales/", HTTP_ORIGIN="null", HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST")
         self.assertEqual(r.status_code, 204)
         self.assertEqual(r["Access-Control-Allow-Origin"], "null")
+        self.assertIn("X-Nexa-Workspace", r["Access-Control-Allow-Headers"])
         r = self.client.options("/api/sales/", HTTP_ORIGIN="http://evil.test", HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST")
         self.assertNotIn("Access-Control-Allow-Origin", r)
 

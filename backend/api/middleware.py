@@ -45,7 +45,7 @@ class CorsMiddleware:
         if allowed:
             response["Access-Control-Allow-Origin"] = origin
             response["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
-            response["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+            response["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Nexa-Workspace"
             response["Access-Control-Expose-Headers"] = "X-Total-Count"
             response["Access-Control-Max-Age"] = "600"
             response["Vary"] = "Origin"

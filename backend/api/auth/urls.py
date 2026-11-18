@@ -15,4 +15,11 @@ urlpatterns = [
     path("account/sessions/", v.account_sessions),
     path("account/security/request/", v.account_security_request),
     path("account/security/confirm/", v.account_security_confirm),
+    path("team/", v.team_overview),
+    path("team/sharing/", v.team_sharing_settings),
+    path("team/invitations/", v.team_invite),
+    path("team/invitations/preview/", v.team_invitation_preview),
+    path("team/invitations/accept/", v.team_invitation_accept),
+    path("team/invitations/<int:pk>/", v.team_invitation_detail),
+    path("team/members/<int:pk>/", v.team_member_detail),
 ]

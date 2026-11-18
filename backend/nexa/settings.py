@@ -7,6 +7,17 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 DEBUG = os.environ.get("NEXA_DEBUG", "1") == "1"
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+
+# Production hardening: redirect non-HTTPS requests to HTTPS and enforce HSTS.
+# When DEBUG=False, Render (or any HTTPS-terminating proxy) will route HTTPS traffic here.
+# Non-HTTPS requests come only from local/internal testing; redirect them to HTTPS.
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
 
 SECRET_KEY = os.environ.get("NEXA_SECRET_KEY", "")
 if not SECRET_KEY:

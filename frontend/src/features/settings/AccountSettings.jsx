@@ -14,7 +14,7 @@ function deviceName(agent) {
   return `${platform} · ${browser}`;
 }
 
-export default function AccountSettings({ preferences, onEmailChange, onSignOut }) {
+export default function AccountSettings({ onEmailChange, onSignOut }) {
   const [profile, setProfile] = useState(null);
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -25,7 +25,7 @@ export default function AccountSettings({ preferences, onEmailChange, onSignOut 
   const [password2, setPassword2] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState({ text: "", error: false });
-  const canSend = preferences.email_verified && preferences.email_delivery_configured;
+  const canSend = profile?.email_verified && profile?.email_delivery_configured;
 
   const refreshSessions = () => listAccountSessions(token()).then(setSessions);
   useEffect(() => {

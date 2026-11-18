@@ -27,6 +27,7 @@ from . import images
 from . import models as m
 from . import services as svc
 from . import account_security
+from . import team_access
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,12 @@ def health_ready(request):
 
 
 MAX_PAGE_SIZE = 500
+WORKSPACE_SCOPES = {
+    "products": "inventory", "suppliers": "inventory", "stock": "inventory", "batches": "inventory",
+    "purchases": "inventory", "receive": "inventory", "sales": "sales", "customers": "customers",
+    "expenses": "expenses", "dashboard": "dashboard", "reports": "reports", "insights": "insights",
+    "assistant": "insights", "settings": "settings", "team": "team",
+}
 
 
 def page(request, items, default_limit=None):
@@ -88,20 +95,42 @@ def with_total(response, total):
     return response
 
 
-def api(*methods, auth=True, max_body=None):
+def api(*methods, auth=True, max_body=None, workspace=True, workspace_edit=None):
     def deco(fn):
         @wraps(fn)
         def wrapper(request, *args, **kwargs):
             if request.method not in methods:
                 return fail("Method not allowed.", 405)
             request.owner = None
+            request.actor = None
+            request.membership = None
             request.prefs = None
             if auth:
                 header = request.headers.get("Authorization", "")
                 user = svc.user_from_token(header[7:]) if header.startswith("Bearer ") else None
                 if not user:
                     return fail("Authentication required.", 401)
-                request.owner = user
+                request.actor = user
+                if workspace:
+                    try:
+                        request.owner, request.membership = team_access.resolve_workspace(
+                            user, request.headers.get("X-Nexa-Workspace"),
+                        )
+                    except svc.ServiceError as error:
+                        return fail(error.message, error.status)
+                else:
+                    request.owner = user
+                if workspace and request.membership:
+                    parts = request.path.strip("/").split("/")
+                    scope = WORKSPACE_SCOPES.get(parts[1] if len(parts) > 1 and parts[0] == "api" else "")
+                    if scope == "team":
+                        if not request.membership.can_manage_members:
+                            return fail("You are not allowed to manage this business's team.", 403)
+                    elif scope is None or not team_access.has_permission(
+                        request.membership, scope,
+                        edit=(request.method != "GET") if workspace_edit is None else workspace_edit,
+                    ):
+                        return fail("You do not have permission to use this business area.", 403)
             request.data = {}
             if request.method in ("POST", "PATCH") and request.body:
                 if max_body is not None and len(request.body) > max_body:
@@ -302,7 +331,7 @@ def register(request):
         text(d, "username", maxlen=30), text(d, "email", maxlen=254),
         d.get("password") if isinstance(d.get("password"), str) else "",
         d.get("password2") if isinstance(d.get("password2"), str) else None, d.get("accepted_terms"),
-        request.headers.get("User-Agent", ""),
+        request.headers.get("User-Agent", ""), d.get("team_sharing_enabled", False),
     )
     return _session(user, key, 201)
 
@@ -317,30 +346,41 @@ def login(request):
     return _session(user, key)
 
 
-@api("POST")
+@api("POST", workspace=False)
 def logout(request):
     svc.revoke_token(request.headers["Authorization"][7:])
     return ok({"detail": "Signed out."})
 
 
-@api("GET")
+@api("GET", workspace=False)
 def me(request):
-    return ok({"id": request.owner.id, "username": request.owner.username, "email": request.owner.email, "is_staff": request.owner.is_staff})
+    workspaces = team_access.workspaces_for_user(request.actor)
+    try:
+        active_owner = team_access.select_workspace(request.actor, request.headers.get("X-Nexa-Workspace"))
+    except svc.ServiceError as error:
+        return fail(error.message, error.status)
+    active = next((workspace for workspace in workspaces if workspace["id"] == active_owner.pk), workspaces[0])
+    return ok({
+        "id": request.actor.id, "username": request.actor.username, "email": request.actor.email,
+        "is_staff": request.actor.is_staff, "workspaces": workspaces,
+        "active_workspace_id": active["id"], "email_verified": request.prefs.email_verified,
+        "email_delivery_configured": svc.email_delivery_configured(),
+    })
 
 
-@api("PATCH", max_body=2048)
+@api("PATCH", max_body=2048, workspace=False)
 def account_profile(request):
-    username = account_security.change_username(request.owner, text(request.data, "username", maxlen=30))
-    response = ok({"username": username, "email": request.owner.email})
+    username = account_security.change_username(request.actor, text(request.data, "username", maxlen=30))
+    response = ok({"username": username, "email": request.actor.email})
     response["Cache-Control"] = "no-store, private"
     return response
 
 
-@api("GET")
+@api("GET", workspace=False)
 def account_sessions(request):
     current = svc._hash(request.headers["Authorization"][7:])
     sessions = m.ApiToken.objects.filter(
-        user=request.owner, expires_at__gt=timezone.now(),
+        user=request.actor, expires_at__gt=timezone.now(),
     ).order_by("-created_at").values("id", "created_at", "expires_at", "user_agent", "key_hash")
     response = ok([{
         "id": session["id"], "created_at": session["created_at"], "expires_at": session["expires_at"],
@@ -350,10 +390,10 @@ def account_sessions(request):
     return response
 
 
-@api("POST", max_body=2048)
+@api("POST", max_body=2048, workspace=False)
 def account_security_request(request):
     account_security.request_code(
-        request.owner, request.headers["Authorization"][7:],
+        request.actor, request.headers["Authorization"][7:],
         text(request.data, "action", maxlen=20), text(request.data, "target", maxlen=254),
     )
     response = ok({"detail": "A security code was sent to your current email address."})
@@ -361,11 +401,11 @@ def account_security_request(request):
     return response
 
 
-@api("POST", max_body=4096)
+@api("POST", max_body=4096, workspace=False)
 def account_security_confirm(request):
     data = request.data
     result = account_security.confirm_code(
-        request.owner, request.headers["Authorization"][7:],
+        request.actor, request.headers["Authorization"][7:],
         text(data, "action", maxlen=20), text(data, "code", maxlen=6),
         data.get("password") if isinstance(data.get("password"), str) else "",
         data.get("password2") if isinstance(data.get("password2"), str) else "",
@@ -373,6 +413,84 @@ def account_security_confirm(request):
     response = ok({"status": result})
     response["Cache-Control"] = "no-store, private"
     return response
+
+
+@api("GET")
+def team_overview(request):
+    invitations = m.TeamInvitation.objects.filter(
+        owner=request.owner, accepted_at__isnull=True, expires_at__gt=timezone.now(),
+    ).order_by("created_at")
+    return ok({
+        "enabled": request.prefs.team_sharing_enabled if request.actor.pk == request.owner.pk else True,
+        "business_name": request.prefs.business_name or request.owner.username,
+        "members": team_access.list_team(request.owner, request.actor),
+        "invitations": [{
+            "id": invitation.id,
+            "email": invitation.email,
+            "permissions": team_access.normalize_permissions(invitation.permissions),
+            "can_manage_members": invitation.can_manage_members,
+            "created_at": invitation.created_at,
+            "expires_at": invitation.expires_at,
+        } for invitation in invitations],
+    })
+
+
+@api("PATCH", max_body=1024)
+def team_sharing_settings(request):
+    if request.actor.pk != request.owner.pk:
+        return fail("Only the business owner can change team sharing.", 403)
+    enabled = request.data.get("team_sharing_enabled")
+    team_access.set_sharing(request.owner, enabled)
+    return ok({"team_sharing_enabled": enabled})
+
+
+@api("POST", max_body=4096)
+def team_invite(request):
+    invitation = team_access.create_invitation(
+        request.owner, request.actor, request.data.get("email"),
+        request.data.get("permissions"), request.data.get("can_manage_members", False),
+    )
+    return ok({
+        "id": invitation.id, "email": invitation.email,
+        "expires_at": invitation.expires_at,
+    }, 201)
+
+
+@api("POST", auth=False, max_body=1024)
+def team_invitation_preview(request):
+    return ok(team_access.invitation_preview(request.data.get("token")))
+
+
+@api("POST", workspace=False, max_body=1024)
+def team_invitation_accept(request):
+    owner = team_access.accept_invitation(request.actor, request.data.get("token"))
+    workspace = next(
+        item for item in team_access.workspaces_for_user(request.actor)
+        if item["id"] == owner.pk
+    )
+    return ok({"workspace": workspace})
+
+
+@api("PATCH", "DELETE", max_body=4096)
+def team_member_detail(request, pk):
+    if request.method == "DELETE":
+        team_access.remove_member(request.owner, request.actor, pk)
+        return ok({"detail": "Team member removed."})
+    membership = team_access.update_member(
+        request.owner, request.actor, pk,
+        request.data.get("permissions"),
+        request.data.get("can_manage_members", False),
+    )
+    return ok({
+        "id": membership.id, "permissions": membership.permissions,
+        "can_manage_members": membership.can_manage_members,
+    })
+
+
+@api("DELETE")
+def team_invitation_detail(request, pk):
+    team_access.cancel_invitation(request.owner, pk)
+    return ok({"detail": "Invitation canceled."})
 
 
 # ---------- catalogue ----------
@@ -855,6 +973,8 @@ def app_settings(request):
 
 @api("POST", max_body=1024)
 def verify_settings_email(request):
+    if request.actor.pk != request.owner.pk:
+        return fail("Only the business owner can verify the business email.", 403)
     if not request.owner.email:
         return fail("Add an account email before requesting verification.", 400)
     if not svc.email_delivery_configured():
@@ -863,7 +983,7 @@ def verify_settings_email(request):
     return ok({"message": "A sign-in and email verification link was sent."})
 
 
-@api("POST", max_body=1024)
+@api("POST", max_body=1024, workspace=False)
 def request_account_confirmation(request):
     action = request.data.get("action")
     svc.request_account_action(request.owner, action)
@@ -965,7 +1085,7 @@ def goal_series(request):
     return ok(svc.goal_series(request.owner, prefs.revenue_goal, prefs.goal_period, timezone.localdate()))
 
 
-@api("POST", max_body=4096)
+@api("POST", max_body=4096, workspace_edit=False)
 def assistant_chat(request):
     key = f"nexa:assistant:{request.owner.pk}"
     if not cache.add(key, 1, timeout=60):
@@ -990,7 +1110,7 @@ def assistant_chat(request):
     })
 
 
-@api("POST", max_body=4096)
+@api("POST", max_body=4096, workspace_edit=False)
 def assistant_analyze(request):
     analysis = request.data.get("analysis")
     if not isinstance(analysis, str) or analysis not in algorithms.ANALYSES:

@@ -3,7 +3,7 @@ import { TOKEN_KEY } from "../../api/client.js";
 import { login, register, requestPasswordReset } from "./api.js";
 
 export default function AuthSheet({ mode, onClose, onEnter, onSwitch }) {
-  const [f, setF] = useState({ username: "", email: "", password: "", password2: "", terms: false });
+  const [f, setF] = useState({ username: "", email: "", password: "", password2: "", terms: false, teamSharing: false });
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -49,7 +49,7 @@ export default function AuthSheet({ mode, onClose, onEnter, onSwitch }) {
   };
   const signup = mode === "signup";
   const forgot = mode === "forgot";
-  const set = (k) => (e) => setF({ ...f, [k]: k === "terms" ? e.target.checked : e.target.value });
+  const set = (k) => (e) => setF({ ...f, [k]: ["terms", "teamSharing"].includes(k) ? e.target.checked : e.target.value });
   const submit = async (e) => {
     e.preventDefault();
     if (leavingRef.current || submittingRef.current) return;
@@ -68,7 +68,10 @@ export default function AuthSheet({ mode, onClose, onEnter, onSwitch }) {
         return;
       }
       const res = signup
-        ? await register({ username: f.username, email: f.email, password: f.password, password2: f.password2, accepted_terms: f.terms })
+        ? await register({
+          username: f.username, email: f.email, password: f.password, password2: f.password2,
+          accepted_terms: f.terms, team_sharing_enabled: f.teamSharing,
+        })
         : await login({ username: f.username, password: f.password });
       localStorage.setItem(TOKEN_KEY, res.token);
       leave(() => onEnter(res.user));
@@ -108,6 +111,10 @@ export default function AuthSheet({ mode, onClose, onEnter, onSwitch }) {
           <label className="agree">
             <input type="checkbox" checked={f.terms} onChange={set("terms")} />
             <span>I accept the <button type="button" className="linkbtn" onClick={() => setShowTerms(!showTerms)}>terms and conditions</button></span>
+          </label>
+          <label className="agree">
+            <input type="checkbox" checked={f.teamSharing} onChange={set("teamSharing")} />
+            <span>Enable team sharing for my business. I can invite people and set their permissions later.</span>
           </label>
           {showTerms && <div className="terms">
             <p>1. Nexa helps you record and review your business activity. You are responsible for the accuracy of what you enter.</p>

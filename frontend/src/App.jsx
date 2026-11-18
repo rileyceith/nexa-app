@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ADMIN_URL, API, TOKEN_KEY } from "./api/client.js";
+import { ADMIN_URL, API, selectWorkspace, selectedWorkspace, TOKEN_KEY, WORKSPACE_KEY } from "./api/client.js";
 import { AuthSheet, RecordSheet } from "./components/index.jsx";
 import { shrinkImage } from "./features/inventory/images.js";
 import AccountSettings from "./features/settings/AccountSettings.jsx";
+import TeamSettings from "./features/settings/TeamSettings.jsx";
 import { currentUser, logout, resetPassword, verifyMagicLink } from "./features/auth/api.js";
 import { listProducts } from "./features/catalog/api.js";
 import { createExpense, createSale, listExpenses, listSales } from "./features/sales/api.js";
@@ -11,7 +12,7 @@ import { analyze, chat } from "./features/insights/api.js";
 import { getDashboard, getReports } from "./features/reports/api.js";
 import {
   getGoalSeries, getSettings, updateSettings, verifySettingsEmail, requestAccountConfirmation,
-  exportAccountData, deleteAccount,
+  exportAccountData, deleteAccount, acceptTeamInvitation, previewTeamInvitation,
 } from "./features/settings/api.js";
 
 function smoothPath(p) {
@@ -154,6 +155,7 @@ const NAV = [
   ['overview', 'Overview', 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z', 'How your business is doing'],
   ['account', 'Account', 'M20 21a8 8 0 00-16 0M12 12a4 4 0 100-8 4 4 0 000 8z', 'Your profile and security'],
   ['settings', 'Settings', IC.settings, 'Manage your preferences'],
+  ['team', 'Team', 'M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM20 8v6M23 11h-6', 'Manage business access'],
   ['sales', 'Sales', IC.receipt, 'Every sale you have recorded'],
   ['products', 'Products', 'M20 12l-8 8-9-9V3h8zM7.5 7.5h.01', 'Prices, margins and what sells most'],
   ['stock', 'Stock', IC.box, 'Stock levels, purchases and suppliers'],
@@ -204,7 +206,7 @@ const purchaseRow = (p) => [
   dateLabel(p.status === 'Delivered' ? p.delivered_on : p.ordered_on), p.product, p.quantity, p.id,
 ];
 
-function Dashboard({ setTheme, onExit }) {
+function Dashboard({ setTheme, onExit, workspaces = [], onWorkspaceChange, workspaceNotice }) {
   const [isStaff, setIsStaff] = useState(false);
   const [accountEmail, setAccountEmail] = useState('');
   const [nav, setNav] = useState('overview');
@@ -266,6 +268,9 @@ function Dashboard({ setTheme, onExit }) {
   const [themeMsg, setThemeMsg] = useState({ text: '', error: false });
   const [accountMsg, setAccountMsg] = useState({ text: '', error: false });
   const figureLoadSequence = useRef(0);
+  const activeWorkspace = workspaces.find((item) => String(item.id) === selectedWorkspace()) || workspaces[0];
+  const canAccess = (scope) => activeWorkspace?.role === 'owner' || !!activeWorkspace?.permissions?.[scope]?.view;
+  const canEdit = (scope) => activeWorkspace?.role === 'owner' || !!activeWorkspace?.permissions?.[scope]?.edit;
 
   useEffect(() => {
     currentUser(localStorage.getItem(TOKEN_KEY)).then((u) => {
@@ -275,6 +280,7 @@ function Dashboard({ setTheme, onExit }) {
   }, []);
 
   useEffect(() => {
+    if (!canAccess('inventory')) return;
     const token = localStorage.getItem(TOKEN_KEY);
     Promise.all([listProducts(token), listBatches(token), listPurchases(token)])
       .then(([productList, batchList, orderList]) => {
@@ -289,24 +295,31 @@ function Dashboard({ setTheme, onExit }) {
     const token = localStorage.getItem(TOKEN_KEY);
     const month = currentMonthKey();
     const sequence = ++figureLoadSequence.current;
-    return Promise.all([
-      getDashboard(month, token),
-      listExpenses(month, token),
-      listSales(token),
-      getReports(token),
-    ])
-      .then(([figures, expenses, saleList, reports]) => {
-        if (sequence !== figureLoadSequence.current) return;
-        setDash(figures);
-        setExpenseSummary(expenses);
-        setExpList(expenses.items.map((e) => [e.category, toNum(e.amount), shortDate(e.date)]));
-        setSales(saleList.map((s) => [s.customer, toNum(s.amount), s.status, shortDate(s.date), s.product || '', s.product ? s.quantity : 0]));
-        setReportRows(reports);
-        setDashError('');
-      })
-      .catch((error) => {
-        if (sequence === figureLoadSequence.current) setDashError(error.message);
-      });
+    const requests = [];
+    if (canAccess('dashboard')) requests.push(
+      getDashboard(month, token).then((figures) => {
+        if (sequence === figureLoadSequence.current) { setDash(figures); setDashError(''); }
+      }).catch((error) => { if (sequence === figureLoadSequence.current) setDashError(error.message); }),
+    );
+    if (canAccess('expenses')) requests.push(
+      listExpenses(month, token).then((expenses) => {
+        if (sequence === figureLoadSequence.current) {
+          setExpenseSummary(expenses);
+          setExpList(expenses.items.map((e) => [e.category, toNum(e.amount), shortDate(e.date)]));
+        }
+      }).catch((error) => { if (sequence === figureLoadSequence.current) setDashError(error.message); }),
+    );
+    if (canAccess('sales')) requests.push(
+      listSales(token).then((saleList) => {
+        if (sequence === figureLoadSequence.current) setSales(saleList.map((s) => [s.customer, toNum(s.amount), s.status, shortDate(s.date), s.product || '', s.product ? s.quantity : 0]));
+      }).catch((error) => { if (sequence === figureLoadSequence.current) setDashError(error.message); }),
+    );
+    if (canAccess('reports')) requests.push(
+      getReports(token).then((reports) => {
+        if (sequence === figureLoadSequence.current) setReportRows(reports);
+      }).catch((error) => { if (sequence === figureLoadSequence.current) setDashError(error.message); }),
+    );
+    return Promise.all(requests);
   };
   useEffect(() => { loadFigures(); }, []);
 
@@ -471,7 +484,7 @@ function Dashboard({ setTheme, onExit }) {
     setGoalChartData(series);
   });
   useEffect(() => {
-    if (nav !== 'settings' && nav !== 'overview') return;
+    if ((nav !== 'settings' && nav !== 'overview') || !canAccess('settings')) return;
     loadGoal().catch((error) => {
       if (nav === 'settings') setGoalMsg({ text: error.message, error: true });
     });
@@ -707,7 +720,7 @@ function Dashboard({ setTheme, onExit }) {
     ),
 
     account: () => (
-      <AccountSettings preferences={preferences} onEmailChange={setAccountEmail} onSignOut={onExit} />
+      <AccountSettings onEmailChange={setAccountEmail} onSignOut={onExit} />
     ),
 
     settings: () => (
@@ -716,6 +729,7 @@ function Dashboard({ setTheme, onExit }) {
           <h2>Settings that fit your business</h2><p>Manage your account, preferences and business details.</p></div></div>
         <nav className='settings-categories' aria-label='Settings categories'>
           <button type='button' onClick={() => setNav('account')}>Account</button>
+          {(activeWorkspace?.role === 'owner' || activeWorkspace?.can_manage_members) && <button type='button' onClick={() => setNav('team')}>Team sharing</button>}
           <a href='#settings-appearance'>Appearance</a>
           <a href='#settings-business'>Business</a>
           <a href='#settings-inventory'>Inventory</a>
@@ -724,6 +738,7 @@ function Dashboard({ setTheme, onExit }) {
           <a href='#settings-account'>Account &amp; data</a>
         </nav>
         <form className='dgrid settings-form' onSubmit={savePreferences}>
+          <fieldset className='permission-locked' disabled={!canEdit('settings')}>
           <h2 className='settings-heading span3' id='settings-appearance'>Appearance</h2>
           <section className='dc span3'>
             <Title ic={IC.settings}>Theme</Title>
@@ -829,6 +844,7 @@ function Dashboard({ setTheme, onExit }) {
             <button type='submit' className='btn iri nbtn' disabled={settingsBusy || logoBusy}>{settingsBusy ? 'Saving…' : 'Save settings'}</button>
             {settingsMsg.text && <p className={settingsMsg.error ? 'nerr' : 'nok'} role={settingsMsg.error ? 'alert' : 'status'}>{settingsMsg.text}</p>}
           </div>
+          </fieldset>
         </form>
         <div className='settings-sections'>
           <h2 className='settings-heading' id='settings-goals'>Goals</h2>
@@ -836,6 +852,7 @@ function Dashboard({ setTheme, onExit }) {
             <Title ic={IC.gross}>Revenue goal</Title>
             <p>Progress counts only paid sales in the selected period.</p>
             <form className='nform' onSubmit={saveGoal}>
+              <fieldset className='permission-locked' disabled={!canEdit('settings')}>
               <label>Sales goal ({preferences.currency})
                 <input type='number' min='0' step='0.01' value={goalForm.amount} onChange={(e) => setGoalForm((f) => ({ ...f, amount: e.target.value }))} />
               </label>
@@ -851,6 +868,7 @@ function Dashboard({ setTheme, onExit }) {
                 <button type='submit' className='btn iri nbtn' disabled={goalBusy}>{goalBusy ? 'Saving…' : 'Save goal'}</button>
                 <button type='button' className='btn glass' disabled={goalBusy || !goalData || goalData.revenue_goal == null} onClick={clearGoal}>Clear goal</button>
               </div>
+              </fieldset>
             </form>
             {goalMsg.text && <p className={goalMsg.error ? 'nerr' : 'nok'} role={goalMsg.error ? 'alert' : 'status'}>{goalMsg.text}</p>}
             {goalData && goalData.progress && (
@@ -878,6 +896,8 @@ function Dashboard({ setTheme, onExit }) {
         </div>
       </>
     ),
+
+    team: () => <TeamSettings workspace={workspaces.find((item) => String(item.id) === selectedWorkspace()) || workspaces[0]} />,
 
     sales: () => {
       const list = sales.filter((s) => (sf === 'All' || s[2] === sf) && s[0].toLowerCase().includes(q.toLowerCase()));
@@ -941,7 +961,7 @@ function Dashboard({ setTheme, onExit }) {
             <div className='nstock row' key={p[0]}>
               {p[7] ? <img className='pimg' src={p[7]} alt={p[0]} /> : <span className='nin'>{p[0][0]}</span>}
               <div className='grow'><div className='nrow2'><span>{p[0]}</span><span>{p[4]} of {p[5]}</span></div><Bar pct={(p[4] / p[5]) * 100} /></div>
-              <button className='dmini' disabled={ordered[p[0]]} onClick={() => reorder(p)}>{ordered[p[0]] ? 'Ordered ✓' : 'Reorder'}</button>
+              <button className='dmini' disabled={!canEdit('inventory') || ordered[p[0]]} onClick={() => reorder(p)}>{ordered[p[0]] ? 'Ordered ✓' : 'Reorder'}</button>
             </div>
           ))}
         </section>
@@ -992,6 +1012,7 @@ function Dashboard({ setTheme, onExit }) {
           <section className='dc span2'>
             <Title ic={NAV.find((x) => x[0] === 'receive')[2]}>Enter new stock</Title>
             <form className='nform' onSubmit={submitReceive}>
+              <fieldset className='permission-locked' disabled={!canEdit('inventory')}>
               <label>Product
                 <select value={rf.p} onChange={pick}>
                   {prodList.map((p) => <option key={p[0]}>{p[0]}</option>)}
@@ -1020,6 +1041,7 @@ function Dashboard({ setTheme, onExit }) {
                 </div>
               </div>
               <button type='submit' className='btn iri nbtn' disabled={receiveBusy}>{receiveBusy ? 'Saving…' : 'Add to stock'}</button>
+              </fieldset>
             </form>
             {rmsg && <p className='nok' role='status'>{rmsg}</p>}
             {stockMsg && <p className='nerr' role='alert'>{stockMsg}</p>}
@@ -1030,7 +1052,7 @@ function Dashboard({ setTheme, onExit }) {
             {orders.map(([x, i]) => (
               <div className='npill col' key={x[0] + i}>
                 <b className='l'>{x[0]}</b><span className='nmut'>{x[1]} · {money(x[2])}</span>
-                <button className='dmini' onClick={() => receiveOrder(i)}>Mark received</button>
+                <button className='dmini' disabled={!canEdit('inventory')} onClick={() => receiveOrder(i)}>Mark received</button>
               </div>
             ))}
           </section>
@@ -1365,8 +1387,20 @@ function Dashboard({ setTheme, onExit }) {
     ),
   };
 
-  const cur = NAV.find((n) => n[0] === nav);
-  const showMonth = ['overview', 'products', 'expenses', 'insights'].includes(nav);
+  const scopeForNav = {
+    overview: 'dashboard', sales: 'sales', products: 'inventory', stock: 'inventory',
+    receive: 'inventory', slow: 'inventory', expenses: 'expenses', customers: 'customers',
+    reports: 'reports', insights: 'insights', settings: 'settings',
+  };
+  const visibleNav = NAV.filter(([id]) => {
+    if (id === 'account') return true;
+    if (id === 'team') return activeWorkspace?.role === 'owner' || activeWorkspace?.can_manage_members;
+    const scope = scopeForNav[id];
+    return activeWorkspace?.role === 'owner' || !!activeWorkspace?.permissions?.[scope]?.view;
+  });
+  const displayedNav = visibleNav.some(([id]) => id === nav) ? nav : visibleNav[0]?.[0] || 'account';
+  const cur = NAV.find((n) => n[0] === displayedNav) || NAV[0];
+  const showMonth = ['overview', 'products', 'expenses', 'insights'].includes(displayedNav);
   const go = (id) => { setNav(id); setQ(''); window.scrollTo(0, 0); };
 
   return (
@@ -1376,10 +1410,10 @@ function Dashboard({ setTheme, onExit }) {
         <nav className='nside' aria-label='Main menu'>
           <BusinessBrand {...businessProfile} />
           <span className='ngrp'>Menu</span>
-          {NAV.map(([id, label, ic], i) => (
+          {visibleNav.map(([id, label, ic], i) => (
             <React.Fragment key={id}>
               {id === 'sales' && <span className='ngrp'>Libraries</span>}
-              <button className='nnav' aria-current={nav === id ? 'page' : undefined} onClick={() => go(id)}>
+              <button className='nnav' aria-current={displayedNav === id ? 'page' : undefined} onClick={() => go(id)}>
                 <span className='nin'><Ico d={ic} s={17} /></span><span className='nlab'>{label}</span>
               </button>
             </React.Fragment>
@@ -1390,16 +1424,22 @@ function Dashboard({ setTheme, onExit }) {
           <header className='ntop'>
             <div><h1>{cur[1]}</h1><p>{preferences.business_name ? `${preferences.business_name} · ${cur[3]}` : cur[3]}</p></div>
             <div className='ntools'>
+              {workspaces.length > 1 && <label className='workspace-picker'>Business
+                <select aria-label='Business workspace' value={activeWorkspace?.id || ''} onChange={(event) => onWorkspaceChange(event.target.value)}>
+                  {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name} · {workspace.role}</option>)}
+                </select>
+              </label>}
               {showMonth && <Month />}
-              {nav !== 'settings' && nav !== 'account' && <>
-                <button className='btn iri nbtn' onClick={() => setForm('sale')}>+ Sale</button>
-                <button className='btn glass nbtn' onClick={() => setForm('expense')}>+ Expense</button>
+              {displayedNav !== 'settings' && displayedNav !== 'account' && displayedNav !== 'team' && <>
+                {canEdit('sales') && <button className='btn iri nbtn' onClick={() => setForm('sale')}>+ Sale</button>}
+                {canEdit('expenses') && <button className='btn glass nbtn' onClick={() => setForm('expense')}>+ Expense</button>}
               </>}
               {isStaff && <a className='dpill' href={ADMIN_URL} target='_blank' rel='noopener'>Admin</a>}
               <button className='dpill' onClick={onExit}>Sign out</button>
             </div>
           </header>
-          <div key={nav} className='nview'>{views[nav]()}</div>
+          {workspaceNotice && <p className='nok' role='status'>{workspaceNotice}</p>}
+          <div key={displayedNav} className='nview'>{views[displayedNav]()}</div>
         </main>
       </div>
       {form && <RecordSheet type={form} onClose={() => setForm(null)} onSave={save} products={prods} currency={preferences.currency} />}
@@ -1410,6 +1450,11 @@ function Dashboard({ setTheme, onExit }) {
 export default function App() {
   const [mode, setMode] = useState(null);
   const [view, setView] = useState('welcome');
+  const [workspaces, setWorkspaces] = useState([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(selectedWorkspace());
+  const [workspaceNotice, setWorkspaceNotice] = useState('');
+  const [teamInvite, setTeamInvite] = useState(null);
+  const [teamInviteMessage, setTeamInviteMessage] = useState({ text: '', error: false });
   const [accountChallenge, setAccountChallenge] = useState(null);
   const [accountConfirmation, setAccountConfirmation] = useState('');
   const [accountChallengeMessage, setAccountChallengeMessage] = useState({ text: '', error: false });
@@ -1421,9 +1466,45 @@ export default function App() {
   useEffect(() => { document.body.classList.toggle('inapp', view === 'app'); document.body.classList.toggle('welcome', view === 'welcome'); window.scrollTo(0, 0); }, [view]);
   const [dark, setDark] = useState(false);
   const setTheme = (enabled) => { setDark(enabled); document.documentElement.dataset.theme = enabled ? "dark" : "light"; };
+
+  const loadWorkspaceUser = async (token) => {
+    try {
+      return await currentUser(token);
+    } catch (error) {
+      if (error.status !== 403 || !selectedWorkspace()) throw error;
+      selectWorkspace(null);
+      const user = await currentUser(token);
+      setWorkspaceNotice("Your previous business workspace is no longer available. Showing your personal business.");
+      return user;
+    }
+  };
+  const openApp = async (inviteToken = null) => {
+    const token = localStorage.getItem(TOKEN_KEY);
+    const user = await loadWorkspaceUser(token);
+    const workspaceId = selectedWorkspace() || String(user.active_workspace_id);
+    selectWorkspace(workspaceId);
+    setActiveWorkspaceId(workspaceId);
+    setWorkspaces(user.workspaces || []);
+    setView('app');
+    if (inviteToken) {
+      try {
+        const accepted = await acceptTeamInvitation(inviteToken, token);
+        const acceptedId = String(accepted.workspace.id);
+        selectWorkspace(acceptedId);
+        setActiveWorkspaceId(acceptedId);
+        const updatedUser = await currentUser(token);
+        setWorkspaces(updatedUser.workspaces || []);
+        setTeamInvite(null);
+        setWorkspaceNotice(`You joined ${accepted.workspace.name}.`);
+      } catch (error) {
+        setWorkspaceNotice(error.message);
+      }
+    }
+  };
   useEffect(() => {
     const url = new URL(window.location.href);
     const hashParams = new URLSearchParams(url.hash.slice(1));
+    const invitationToken = hashParams.get('team_invite');
     const resetToken = hashParams.get('password_reset');
     const action = url.searchParams.get('account_action') || hashParams.get('account_action');
     const challengeToken = url.searchParams.get('token') || hashParams.get('token');
@@ -1435,6 +1516,17 @@ export default function App() {
       url.hash = '';
       window.history.replaceState(null, '', url.pathname + url.search);
       return;
+    }
+    if (invitationToken) {
+      setTeamInvite({ token: invitationToken, preview: null });
+      url.hash = '';
+      window.history.replaceState(null, '', url.pathname + url.search);
+      previewTeamInvitation(invitationToken).then((preview) => {
+        setTeamInvite({ token: invitationToken, preview });
+      }).catch((error) => {
+        setTeamInvite({ token: invitationToken, preview: null });
+        setTeamInviteMessage({ text: error.message, error: true });
+      });
     }
     if (['export', 'delete'].includes(action) && challengeToken) {
       setAccountChallenge({ action, token: challengeToken });
@@ -1450,7 +1542,9 @@ export default function App() {
         url.searchParams.delete('token');
         url.hash = '';
         window.history.replaceState(null, '', url.pathname + url.search);
-        setView('app');
+        openApp(invitationToken).catch((error) => {
+          setTeamInviteMessage({ text: error.message, error: true });
+        });
       }).catch((error) => {
         setAccountChallengeMessage({ text: error.message, error: true });
         url.searchParams.delete('token');
@@ -1461,7 +1555,7 @@ export default function App() {
     }
     const t = localStorage.getItem(TOKEN_KEY);
     if (!t) return;
-    currentUser(t).then(() => setView('app')).catch((e) => { if (!/reach/.test(e.message)) localStorage.removeItem(TOKEN_KEY); });
+    openApp(invitationToken).catch((e) => { if (!/reach/.test(e.message)) localStorage.removeItem(TOKEN_KEY); });
   }, []);
   const confirmAccountAction = async (event) => {
     event.preventDefault();
@@ -1485,6 +1579,7 @@ export default function App() {
       } else {
         const result = await deleteAccount(accountChallenge.token, accountConfirmation);
         localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(WORKSPACE_KEY);
         setAccountChallenge({ completed: true });
         setAccountChallengeMessage({ text: result.message, error: false });
       }
@@ -1522,6 +1617,7 @@ export default function App() {
   const signOut = () => {
     const t = localStorage.getItem(TOKEN_KEY);
     localStorage.removeItem(TOKEN_KEY);
+    selectWorkspace(null);
     if (t) logout(t).catch(() => {});
     activeCurrency = 'USD';
     activeTimeZone = 'Africa/Harare';
@@ -1585,7 +1681,18 @@ export default function App() {
       </main>
     </div>
   );
-  if (view === 'app') return <Dashboard setTheme={setTheme} onExit={signOut} />;
+  if (view === 'app') return <Dashboard
+    key={activeWorkspaceId}
+    setTheme={setTheme}
+    onExit={signOut}
+    workspaces={workspaces}
+    workspaceNotice={workspaceNotice}
+    onWorkspaceChange={(id) => {
+      selectWorkspace(id);
+      setActiveWorkspaceId(String(id));
+      setWorkspaceNotice('');
+    }}
+  />;
   return (
     <>
       <div className="landing-page">
@@ -1594,6 +1701,18 @@ export default function App() {
           <button className="btn glass" onClick={() => setMode("signin")}>Sign in</button>
         </nav>
         <main className="hero">
+          {teamInvite && <section className='dc team-invite-landing'>
+            <span className='account-kicker'>BUSINESS INVITATION</span>
+            <h2>{teamInvite.preview ? `Join ${teamInvite.preview.business_name}` : 'Accept your business invitation'}</h2>
+            <p>{teamInvite.preview
+              ? `This invitation was sent to ${teamInvite.preview.email}. Sign in or create an account with that email to join.`
+              : 'Sign in or create an account with the invited email address to continue.'}</p>
+            <div className='goal-actions'>
+              <button className='btn iri' onClick={() => setMode('signin')}>Sign in to accept</button>
+              <button className='btn glass' onClick={() => setMode('signup')}>Create account</button>
+            </div>
+            {teamInviteMessage.text && <p className={teamInviteMessage.error ? 'nerr' : 'nok'} role={teamInviteMessage.error ? 'alert' : 'status'}>{teamInviteMessage.text}</p>}
+          </section>}
           {accountChallengeMessage.text && <p className={accountChallengeMessage.error ? 'nerr' : 'nok'} role={accountChallengeMessage.error ? 'alert' : 'status'}>{accountChallengeMessage.text}</p>}
           <span className="tag">Business intelligence, reimagined</span>
           <h1>Run your business with <em>foresight</em></h1>
@@ -1611,7 +1730,12 @@ export default function App() {
         <aside className="float f1" aria-hidden="true"><span>Slow stock flagged after</span><b>45 days</b></aside>
         <aside className="float f2" aria-hidden="true"><span>Next-month forecast</span><b>3 scenarios</b></aside>
       </div>
-      {mode && <AuthSheet mode={mode} onClose={() => setMode(null)} onEnter={() => { setMode(null); setView('app'); }} onSwitch={setMode} />}
+      {mode && <AuthSheet mode={mode} onClose={() => setMode(null)} onEnter={() => {
+        setMode(null);
+        openApp(teamInvite?.token).catch((error) => {
+          setTeamInviteMessage({ text: error.message, error: true });
+        });
+      }} onSwitch={setMode} />}
     </>
   );
 }

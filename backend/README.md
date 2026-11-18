@@ -29,10 +29,15 @@ Sign in with `POST /api/auth/login/` (`username`, `password`), or create an acco
 `POST /api/auth/register/`. Both return an API token. A passwordless alternative also exists:
 `POST /api/auth/request-link/` emails a one-time link (printed to the console in development), and
 `POST /api/auth/verify/` with the link's `token` returns an API token.
-Send it on every other request as `Authorization: Bearer <token>`. All data is scoped to the signed-in user.
+Send it on every authenticated request as `Authorization: Bearer <token>`. By default, business data is scoped
+to the signed-in user's workspace. For another business they belong to, send `X-Nexa-Workspace: <owner-user-id>`;
+the API checks active membership and the requested view/edit permission on every business endpoint. Account
+profile, security codes and signed-in sessions always remain scoped to the signed-in person.
 
-Registration creates the user, default settings, terms acceptance and token in one transaction;
-inventory starts empty. Usernames for new password accounts use 3–30 ASCII letters, digits, dots,
+Registration creates the user, default settings, terms acceptance and token in one transaction. The optional
+`team_sharing_enabled` boolean enables sharing for the new owner's workspace; sharing can also be enabled later
+in Team settings. Inventory starts empty.
+Usernames for new password accounts use 3–30 ASCII letters, digits, dots,
 dashes or underscores. An email address identifies one account: a magic link signs in to that account
 or creates an empty one if it does not exist. Repeated registration returns 409 rather than replaying
 the original token; after an interrupted response, sign in instead. Passwords are hashed by Django;
@@ -48,18 +53,25 @@ Requests are limited to three per email address and 20 per IP address per hour.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `auth/register/` `{username, email, password, password2, accepted_terms}` | Create an account (returns 201 and a token) |
+| POST | `auth/register/` `{username, email, password, password2, accepted_terms, team_sharing_enabled?}` | Create an account (returns 201 and a token) |
 | POST | `auth/login/` `{username, password}` | Sign in with a username and password |
 | POST | `auth/request-link/` `{email}` | Email a sign-in link |
 | POST | `auth/verify/` `{token}` | Exchange link token for an API token |
 | POST | `auth/password-reset/` `{email}` | Request a password reset link (non-enumerating response) |
 | POST | `auth/password-reset/confirm/` `{token, password, password2}` | Set a new password and revoke existing API tokens |
 | POST | `auth/logout/` | Revoke the current token |
-| GET | `me/` | Current user: `{id, username, email, is_staff}`. The dashboard shows an **Admin** button (a link to `/admin/`) only when `is_staff` is true |
+| GET | `me/` | Current account, available workspaces, selected workspace ID and email verification status. The dashboard shows an **Admin** button (a link to `/admin/`) only when `is_staff` is true |
 | PATCH | `account/profile/` `{username}` | Change the account username |
 | GET | `account/sessions/` | List this account's active sessions, including the current session |
 | POST | `account/security/request/` `{action, target}` | Send a security code to the verified current account email for `email`, `password`, or `device`; target is the new email or session ID |
 | POST | `account/security/confirm/` `{action, code, password, password2}` | Confirm a security code; email changes require a second code sent to the new address |
+| GET | `team/` | Owner/team-manager view of members and pending invitations |
+| PATCH | `team/sharing/` `{team_sharing_enabled}` | Owner enables sharing or revokes all members and pending invitations |
+| POST | `team/invitations/` `{email, permissions, can_manage_members}` | Send a seven-day, single-use invitation to a separate account |
+| POST | `team/invitations/preview/` `{token}` | Validate an invitation link without accepting it |
+| POST | `team/invitations/accept/` `{token}` | Accept while signed in with the invited email; personal business data is not merged |
+| PATCH, DELETE | `team/members/<id>/` | Update a member's scope permissions or remove the membership |
+| DELETE | `team/invitations/<id>/` | Cancel a pending invitation |
 | GET, POST | `products/` | List (`?q=`) / create `{name, price, cost, category, target_stock, supplier}` |
 | GET, PATCH | `products/<id>/` | Read / update (`image` sets or clears the photo, 1 MB max). Responses carry `image_url` instead of the image data |
 | GET | `images/<key>/?size=120\|400\|1000` | Public WebP product photo. Use the `image_url` from a product. Default size 400 |
@@ -85,7 +97,9 @@ Requests are limited to three per email address and 20 per IP address per hour.
 | POST | `account/export/` `{token, confirmation: "EXPORT"}` | Download an owner-scoped CSV; no authenticated API token is needed because the email token is the re-authentication |
 | POST | `account/delete/` `{token, confirmation: "DELETE"}` | Permanently delete the account and its associated data after email re-authentication |
 
-Settings are private to each owner. Set `business_name` and optionally `business_logo` (a PNG, JPEG, WebP or GIF data URL of up to 1 MB) through `PATCH /api/settings/`; set `business_logo` to `""` to remove it. The response includes `business_logo_url`. As with product photos, logo images are served through a public, unguessable image URL; do not upload sensitive images. The logo is stored in the configured media storage and deleted when replaced, removed, or the account is deleted. CSV exports do not include image files. Currency changes only change the display label and do not convert stored amounts. Inventory thresholds affect stock warnings and reorder/aging analyses. Email alerts are opt-in, require a verified account email and secure SMTP configuration, and are deduplicated until the triggering condition is resolved. Aged-stock alerts are checked on app requests; this deployment has no scheduler.
+Settings belong to the selected business workspace. Set `business_name` and optionally `business_logo` (a PNG, JPEG, WebP or GIF data URL of up to 1 MB) through `PATCH /api/settings/`; set `business_logo` to `""` to remove it. The response includes `business_logo_url`. As with product photos, logo images are served through a public, unguessable image URL; do not upload sensitive images. The logo is stored in the configured media storage and deleted when replaced, removed, or the account is deleted. CSV exports do not include image files. Currency changes only change the display label and do not convert stored amounts. Inventory thresholds affect stock warnings and reorder/aging analyses. Email alerts are opt-in, require a verified account email and secure SMTP configuration, and are deduplicated until the triggering condition is resolved. Aged-stock alerts are checked on app requests; this deployment has no scheduler.
+
+Team sharing uses migration `0017`. Apply migrations before deploying code that includes these endpoints. Invitations are sent only when the owner's account email is verified and secure email delivery is configured. Permissions are separate `view` and `edit` grants for each business area; edit requires view. Non-owner team managers can only delegate permissions they personally have and cannot grant team-management rights. Disabling sharing deletes memberships and pending invitations; it never merges or deletes member-owned data. Signed-in sessions and device lists remain private to each individual account, not visible through team membership.
 
 Account security codes require a verified current email and configured delivery. Codes expire in
 10 minutes, permit at most five incorrect attempts, and are bound to the requesting session and
