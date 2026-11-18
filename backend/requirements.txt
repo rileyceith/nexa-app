@@ -7,3 +7,6 @@ django-storages[s3]>=1.14
 redis>=5.0
 python-dotenv>=1.0
 django-anymail>=14.0
+certifi>=2026.10.18
+djangorestframework-simplejwt>=5.5.1
+setuptools>=84.1.0
