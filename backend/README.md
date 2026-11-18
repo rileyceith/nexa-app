@@ -151,6 +151,20 @@ provider's secret environment settings. Do not commit the file or print the conn
 Connecting a new database does not transfer existing SQLite accounts or data; back up and migrate
 them separately before switching. Neon Auth does not replace Nexa's existing authentication.
 
+For the manually configured Render + Neon service, use `python backend/start_production.py` as
+the start command with the repository root as the root directory. It requires a PostgreSQL
+`NEXA_DATABASE_URL` with `sslmode=require`, `verify-ca`, or `verify-full`, and refuses to start
+if Django reports pending migrations or cannot check the database. `require` encrypts the
+connection but does not provide the same server identity verification as `verify-full`; configure
+the trusted root certificate and use `verify-full` where supported. Keep credentials private.
+
+Before deploying schema changes, back up the database, test the migrations on an isolated
+production-like Neon branch, and apply them to production with Django using a direct (non-pooled)
+connection. Only deploy compatible code after they succeed. The startup check detects pending
+migrations, not every possible schema drift, and does not apply or repair migrations automatically.
+Keep migrations compatible with the running version during deployment. A failed check prevents
+the new instance from starting; monitor deployment logs and restore service before retrying.
+
 For HTTPS email delivery on Render, set `NEXA_EMAIL_BACKEND=anymail.backends.resend.EmailBackend`,
 `NEXA_RESEND_API_KEY` to a Resend sending-only API key, and `NEXA_FROM_EMAIL` to a sender
 permitted by Resend. These settings apply to sign-in links, password resets, account confirmations,
