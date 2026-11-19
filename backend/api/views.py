@@ -392,11 +392,14 @@ def account_sessions(request):
 
 @api("POST", max_body=2048, workspace=False)
 def account_security_request(request):
+    action = text(request.data, "action", maxlen=20)
     account_security.request_code(
         request.actor, request.headers["Authorization"][7:],
-        text(request.data, "action", maxlen=20), text(request.data, "target", maxlen=254),
+        action, text(request.data, "target", maxlen=254),
+        request.data.get("current_password") if isinstance(request.data.get("current_password"), str) else "",
     )
-    response = ok({"detail": "A security code was sent to your current email address."})
+    address = "new" if action == "add_email" else "current"
+    response = ok({"detail": f"A security code was sent to your {address} email address."})
     response["Cache-Control"] = "no-store, private"
     return response
 

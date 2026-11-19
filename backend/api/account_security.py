@@ -60,21 +60,21 @@ def change_username(owner, username):
     return username
 
 
-def request_code(owner, token, action, target):
-    if action not in ("email", "password", "device"):
+def request_code(owner, token, action, target, current_password=""):
+    if action not in ("add_email", "email", "password", "device"):
         raise svc.ServiceError("Choose a valid account action.")
-    if not owner.email or not owner.preferences.email_verified:
+    if action != "add_email" and (not owner.email or not owner.preferences.email_verified):
         raise svc.ServiceError("Verify your current account email before using security codes.", 403)
     if not svc.email_delivery_configured():
         raise svc.ServiceError("Secure email delivery is not configured.", 503)
     session = _session(owner, token)
-    if action == "email":
+    if action in ("add_email", "email"):
         target = target.strip().lower()
         try:
             validate_email(target)
         except ValidationError:
             raise svc.ServiceError("Enter a valid new email address.")
-        if target == owner.email.strip().lower():
+        if action == "email" and target == owner.email.strip().lower():
             raise svc.ServiceError("Enter a different email address.")
         if svc.users_with_email(target).exists():
             raise svc.ServiceError("That email address is already in use.", 409)
@@ -89,16 +89,24 @@ def request_code(owner, token, action, target):
         raise svc.ServiceError("Too many security codes requested. Try again later.", 429)
     code = f"{secrets.randbelow(1000000):06d}"
     with transaction.atomic():
-        get_user_model().objects.select_for_update().get(pk=owner.pk)
+        user = get_user_model().objects.select_for_update().get(pk=owner.pk)
+        if action == "add_email":
+            if user.email.strip():
+                raise svc.ServiceError("This account already has an email address.", 400)
+            if not user.has_usable_password():
+                raise svc.ServiceError("This account has no usable password. Contact an administrator.", 403)
+            if not user.check_password(current_password):
+                raise svc.ServiceError("Incorrect current account password.", 403)
         m.AccountSecurityChallenge.objects.filter(owner=owner, session=session).delete()
         challenge = m.AccountSecurityChallenge.objects.create(
             owner=owner, session=session, action=action, target=target,
-            email_snapshot=owner.email.strip().lower(), code_hash="",
+            email_snapshot=user.email.strip().lower(), code_hash="",
+            stage="new" if action == "add_email" else "current",
             expires_at=timezone.now() + timedelta(minutes=10),
         )
         challenge.code_hash = _code_hash(challenge.pk, code)
         challenge.save(update_fields=["code_hash"])
-        _send_code(owner.email, code)
+        _send_code(target if action == "add_email" else user.email, code)
 
 
 def confirm_code(owner, token, action, code, password="", password2=""):
@@ -132,7 +140,7 @@ def confirm_code(owner, token, action, code, password="", password2=""):
             challenge.attempts = 0
             challenge.save(update_fields=["stage", "code_hash", "expires_at", "attempts"])
             result = "new_email"
-        elif action == "email":
+        elif action in ("email", "add_email"):
             if svc.users_with_email(challenge.target).exclude(pk=user.pk).exists():
                 raise svc.ServiceError("That email address is already in use.", 409)
             old_email = user.email.strip().lower()
@@ -142,7 +150,12 @@ def confirm_code(owner, token, action, code, password="", password2=""):
                     user.save(update_fields=["email"])
             except IntegrityError:
                 raise svc.ServiceError("That email address is already in use.", 409)
-            m.MagicLink.objects.filter(email__in=[old_email, challenge.target], used_at__isnull=True).delete()
+            if action == "add_email":
+                m.UserSettings.objects.filter(owner=user).update(email_verified=True)
+            emails = [challenge.target]
+            if old_email:
+                emails.append(old_email)
+            m.MagicLink.objects.filter(email__in=emails, used_at__isnull=True).delete()
             m.PasswordResetToken.objects.filter(owner=user, used_at__isnull=True).update(used_at=timezone.now())
             m.AccountActionToken.objects.filter(owner=user, used_at__isnull=True).update(used_at=timezone.now())
             m.ApiToken.objects.filter(user=user).exclude(pk=session.pk).delete()

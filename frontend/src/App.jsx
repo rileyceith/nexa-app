@@ -720,7 +720,10 @@ function Dashboard({ setTheme, onExit, workspaces = [], onWorkspaceChange, works
     ),
 
     account: () => (
-      <AccountSettings onEmailChange={setAccountEmail} onSignOut={onExit} />
+      <AccountSettings onEmailChange={(email) => {
+        setAccountEmail(email);
+        if (activeWorkspace?.role === 'owner') setPreferences((current) => ({ ...current, email_verified: true }));
+      }} onSignOut={onExit} />
     ),
 
     settings: () => (

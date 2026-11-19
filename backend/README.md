@@ -63,7 +63,7 @@ Requests are limited to three per email address and 20 per IP address per hour.
 | GET | `me/` | Current account, available workspaces, selected workspace ID and email verification status. The dashboard shows an **Admin** button (a link to `/admin/`) only when `is_staff` is true |
 | PATCH | `account/profile/` `{username}` | Change the account username |
 | GET | `account/sessions/` | List this account's active sessions, including the current session |
-| POST | `account/security/request/` `{action, target}` | Send a security code to the verified current account email for `email`, `password`, or `device`; target is the new email or session ID |
+| POST | `account/security/request/` `{action, target, current_password?}` | Send a security code for `email`, `password`, or `device`; `add_email` requires the current password and sends a code to the new address when no email is set |
 | POST | `account/security/confirm/` `{action, code, password, password2}` | Confirm a security code; email changes require a second code sent to the new address |
 | GET | `team/` | Owner/team-manager view of members and pending invitations |
 | PATCH | `team/sharing/` `{team_sharing_enabled}` | Owner enables sharing or revokes all members and pending invitations |
@@ -103,7 +103,9 @@ Team sharing uses migration `0017`. Apply migrations before deploying code that 
 
 Account security codes require a verified current email and configured delivery. Codes expire in
 10 minutes, permit at most five incorrect attempts, and are bound to the requesting session and
-action. Requests are limited to five per account per hour. Email changes also verify the new
+action. Requests are limited to five per account per hour. Accounts without an email can add one
+by confirming their existing password and a code sent to the new address; accounts without a usable
+password cannot use this flow. Email changes also verify the new
 address and sign out other sessions; password changes sign out all sessions. Previously issued
 reset, sign-in and account-action links are invalidated. Session browser details are collected
 at sign-in; sessions created before this feature show as unknown. Do not rely on browser labels

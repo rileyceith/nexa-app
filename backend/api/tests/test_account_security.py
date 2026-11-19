@@ -80,6 +80,76 @@ class AccountSecurityTests(TestCase):
         self.assertIsNone(svc.user_from_token(other_session))
         self.assertEqual(self.confirm("email", new_code).status_code, 400)
 
+    def test_account_without_email_can_add_verified_address(self, configured):
+        self.user.email = ""
+        self.user.save(update_fields=["email"])
+        self.user.preferences.email_verified = False
+        self.user.preferences.save(update_fields=["email_verified"])
+        other_session = svc.issue_token(self.user)
+        response = self.post("/api/account/security/request/", {
+            "action": "add_email", "target": "new@example.com", "current_password": "old-Strong-Pass42",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mail.outbox[-1].to, ["new@example.com"])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "")
+        code = self.code()
+        wrong_headers = {"HTTP_AUTHORIZATION": "Bearer " + other_session}
+        self.assertEqual(self.post("/api/account/security/confirm/", {
+            "action": "add_email", "code": code,
+        }, wrong_headers).status_code, 400)
+        self.assertEqual(self.confirm("add_email", code).json()["status"], "email_changed")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "new@example.com")
+        self.assertTrue(m.UserSettings.objects.get(owner=self.user).email_verified)
+        self.assertIsNone(svc.user_from_token(other_session))
+        self.assertIsNotNone(svc.user_from_token(self.token))
+        self.assertEqual(self.confirm("add_email", code).status_code, 400)
+
+    def test_add_email_requires_password_and_cannot_replace_existing_email(self, configured):
+        data = {"action": "add_email", "target": "new@example.com", "current_password": "old-Strong-Pass42"}
+        self.assertEqual(self.post("/api/account/security/request/", data).status_code, 400)
+        self.user.email = ""
+        self.user.save(update_fields=["email"])
+        data["current_password"] = "wrong"
+        self.assertEqual(self.post("/api/account/security/request/", data).status_code, 403)
+        self.assertFalse(m.AccountSecurityChallenge.objects.exists())
+        self.assertEqual(len(mail.outbox), 0)
+        data["current_password"] = "old-Strong-Pass42"
+        data["target"] = self.other.email
+        self.assertEqual(self.post("/api/account/security/request/", data).status_code, 409)
+
+    def test_add_email_delivery_failure_does_not_change_account(self, configured):
+        self.user.email = ""
+        self.user.save(update_fields=["email"])
+        with patch("api.services._send_email", side_effect=OSError("unavailable")):
+            with self.assertLogs("api.services", level="ERROR"):
+                response = self.post("/api/account/security/request/", {
+                    "action": "add_email", "target": "new@example.com", "current_password": "old-Strong-Pass42",
+                })
+        self.assertEqual(response.status_code, 503)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "")
+        self.assertFalse(m.AccountSecurityChallenge.objects.exists())
+
+    def test_add_email_rejects_expired_or_stale_challenge(self, configured):
+        self.user.email = ""
+        self.user.save(update_fields=["email"])
+        payload = {"action": "add_email", "target": "new@example.com", "current_password": "old-Strong-Pass42"}
+        self.assertEqual(self.post("/api/account/security/request/", payload).status_code, 200)
+        code = self.code()
+        challenge = m.AccountSecurityChallenge.objects.get(owner=self.user)
+        challenge.expires_at = timezone.now() - timedelta(seconds=1)
+        challenge.save(update_fields=["expires_at"])
+        self.assertEqual(self.confirm("add_email", code).status_code, 400)
+        challenge.expires_at = timezone.now() + timedelta(minutes=5)
+        challenge.save(update_fields=["expires_at"])
+        self.user.email = "added-elsewhere@example.com"
+        self.user.save(update_fields=["email"])
+        self.assertEqual(self.confirm("add_email", code).status_code, 400)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "added-elsewhere@example.com")
+
     def test_password_change_signs_out_all_sessions_and_invalidates_resets(self, configured):
         other_session = svc.issue_token(self.user)
         reset = m.PasswordResetToken.objects.create(

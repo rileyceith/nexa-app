@@ -23,6 +23,7 @@ export default function AccountSettings({ onEmailChange, onSignOut }) {
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState({ text: "", error: false });
   const canSend = profile?.email_verified && profile?.email_delivery_configured;
@@ -54,11 +55,14 @@ export default function AccountSettings({ onEmailChange, onSignOut }) {
     setBusy(true);
     setMessage({ text: "", error: false });
     try {
-      const result = await requestSecurityCode({ action: kind, target }, token());
-      setAction({ kind, target, stage: "current" });
+      const result = await requestSecurityCode({
+        action: kind, target, ...(kind === "add_email" ? { current_password: currentPassword } : {}),
+      }, token());
+      setAction({ kind, target, stage: kind === "add_email" ? "new" : "current" });
       setCode("");
       setPassword("");
       setPassword2("");
+      setCurrentPassword("");
       setMessage({ text: result.detail, error: false });
     } catch (error) {
       setMessage({ text: error.message, error: true });
@@ -81,7 +85,7 @@ export default function AccountSettings({ onEmailChange, onSignOut }) {
         onSignOut();
       } else if (result.status === "email_changed" || result.status === "device_signed_out") {
         if (result.status === "email_changed") {
-          setProfile((current) => ({ ...current, email: action.target }));
+          setProfile((current) => ({ ...current, email: action.target, email_verified: true }));
           onEmailChange(action.target);
           setEmail("");
         }
@@ -108,14 +112,18 @@ export default function AccountSettings({ onEmailChange, onSignOut }) {
           <label>Username<input value={username} maxLength='30' required onChange={(event) => setUsername(event.target.value)} autoComplete='username' /></label>
           <button type='submit' className='btn glass' disabled={busy || !profile || username === profile.username}>Save username</button>
         </form>
-        <form className='nform' onSubmit={(event) => { event.preventDefault(); sendCode("email", email.trim().toLowerCase()); }}>
+        <form className='nform' onSubmit={(event) => { event.preventDefault(); sendCode(profile.email ? "email" : "add_email", email.trim().toLowerCase()); }}>
           <label>New account email<input type='email' maxLength='254' required value={email} onChange={(event) => setEmail(event.target.value)} autoComplete='email' /></label>
-          <button type='submit' className='btn glass' disabled={busy || !canSend}>Change email</button>
+          {profile && !profile.email && <label>Current password<input type='password' required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete='current-password' /></label>}
+          <button type='submit' className='btn glass' disabled={busy || !profile || (profile.email ? !canSend : !profile.email_delivery_configured)}>{profile?.email ? "Change email" : "Add email"}</button>
         </form>
-        <p>We send a code to your current email, then another to the new address. Other devices will be signed out.</p>
+        <p>{profile?.email ? "We send a code to your current email, then another to the new address. Other devices will be signed out." : "Confirm your password, then enter the code sent to your new email. Other devices will be signed out."}</p>
         <div><button type='button' className='btn glass' disabled={busy || !canSend} onClick={() => sendCode("password")}>Change password</button></div>
         <p>Changing your password signs out all devices, including this one.</p>
-        {!canSend && <p className='nerr'>Verify your current account email and configure secure email delivery to use security codes.</p>}
+        {profile && !canSend && <p className='nerr'>{!profile.email_delivery_configured
+          ? "Secure email delivery is not configured."
+          : !profile.email ? "Add and verify an account email to use security codes."
+            : "Verify your current account email to use security codes."}</p>}
       </section>
       <section className='dc'>
         <div><span className='account-kicker'>ACTIVE SESSIONS</span><h3>Signed-in devices</h3>
@@ -129,7 +137,7 @@ export default function AccountSettings({ onEmailChange, onSignOut }) {
         </ul>
       </section>
       {action && <section className='dc account-verification'>
-        <h3>Confirm {action.kind === "email" ? "email change" : action.kind === "password" ? "password change" : "device sign-out"}</h3>
+        <h3>Confirm {action.kind === "add_email" ? "email address" : action.kind === "email" ? "email change" : action.kind === "password" ? "password change" : "device sign-out"}</h3>
         <p>Enter the six-digit code sent to {action.stage === "new" ? "your new email address" : "your current account email"}. Codes expire after 10 minutes.</p>
         <form className='nform' onSubmit={confirm}>
           <label>Security code<input inputMode='numeric' autoComplete='one-time-code' pattern='[0-9]{6}' maxLength='6' value={code} onChange={(event) => setCode(event.target.value)} required /></label>
