@@ -6,6 +6,7 @@ export const getGoalSeries = (token) => call("/settings/series/", null, token);
 export const verifySettingsEmail = (token) => call("/settings/verify-email/", {}, token);
 export const requestAccountConfirmation = (action, token) => call("/account/confirm/", { action }, token);
 export const deleteAccount = (token, confirmation) => call("/account/delete/", { token, confirmation });
+export const resetBusinessData = (confirmation, token) => call("/account/reset-data/", { confirmation }, token);
 export const updateAccountProfile = (data, token) => call("/account/profile/", data, token, "PATCH");
 export const listAccountSessions = (token) => call("/account/sessions/", null, token);
 export const requestSecurityCode = (data, token) => call("/account/security/request/", data, token);

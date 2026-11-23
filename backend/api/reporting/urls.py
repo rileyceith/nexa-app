@@ -11,4 +11,5 @@ urlpatterns = [
     path("account/confirm/", v.request_account_confirmation),
     path("account/export/", v.account_export),
     path("account/delete/", v.account_delete),
+    path("account/reset-data/", v.reset_business_data),
 ]
