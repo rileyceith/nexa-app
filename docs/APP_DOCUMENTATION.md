@@ -105,6 +105,8 @@ The sidebar has these pages:
 | Reports | Results month by month | **Yes**: rows load from `reports/`, one per month from the first sale to the current month. |
 | Insights | Algorithm analyses, the AI assistant chat, and recommendations | **Yes** for the analysis and chat. The recommendation list is not loaded from `insights/`. |
 
+Under **Settings > Account & data**, a business owner can type `RESET` to permanently delete that business's sales, expenses, inventory, purchases, customers, suppliers, notification records and uploaded images, including its logo. The login, remaining preferences, and team setup are retained. The reset is separate from account deletion and does not affect other businesses.
+
 Sales, expenses, the Overview figures, and reports reload from the API when the page opens, so saved records appear after a reload. Products, stock, and receiving also reload from the API. Suppliers are not loaded from their API route. See [Known limitations](#known-limitations).
 
 ### Insights page
@@ -336,6 +338,7 @@ All paths are under `/api/`. Requests and responses use JSON.
 | 30 | POST | `account/confirm/` | Yes | `{action: "export" \| "delete"}` | Emails a short-lived, one-use action link to the verified account email. |
 | 31 | POST | `account/export/` | Email link | `{token, confirmation: "EXPORT"}` | Returns an owner-scoped CSV with `Cache-Control: no-store`; the confirmation token is consumed once. |
 | 32 | POST | `account/delete/` | Email link | `{token, confirmation: "DELETE"}` | Permanently deletes the account and cascaded business data after consuming the one-use email confirmation. |
+| 33 | POST | `account/reset-data/` | Owner | `{confirmation: "RESET"}` | Deletes the selected owner's business records, notification records, product images, and business logo, while retaining the account, remaining preferences, and team setup. |
 
 Paging: `products/`, `sales/`, `expenses/`, `batches/`, and `purchases/` accept `?limit=` and `?offset=`. Responses carry an `X-Total-Count` header with the full count. Without `limit`, `products/`, `batches/`, and `purchases/` return every row, and `sales/` and `expenses/` return at most 500. `limit` is capped at 500. JSON responses are gzip-compressed when the client sends `Accept-Encoding: gzip`. Unexpected server errors return `{"error": ...}` with status 500 and are logged. They are not HTML pages.
 Sales and purchases use the stock rules in [Sales and cost of goods](#sales-and-cost-of-goods).

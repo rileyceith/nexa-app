@@ -12,7 +12,7 @@ import { analyze, chat } from "./features/insights/api.js";
 import { getDashboard, getReports } from "./features/reports/api.js";
 import {
   getGoalSeries, getSettings, updateSettings, verifySettingsEmail, requestAccountConfirmation,
-  exportAccountData, deleteAccount, acceptTeamInvitation, previewTeamInvitation,
+  exportAccountData, deleteAccount, resetBusinessData, acceptTeamInvitation, previewTeamInvitation,
 } from "./features/settings/api.js";
 
 function smoothPath(p) {
@@ -206,7 +206,7 @@ const purchaseRow = (p) => [
   dateLabel(p.status === 'Delivered' ? p.delivered_on : p.ordered_on), p.product, p.quantity, p.id,
 ];
 
-function Dashboard({ setTheme, onExit, workspaces = [], onWorkspaceChange, workspaceNotice }) {
+function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChange, workspaceNotice }) {
   const [isStaff, setIsStaff] = useState(false);
   const [accountEmail, setAccountEmail] = useState('');
   const [nav, setNav] = useState('overview');
@@ -267,6 +267,10 @@ function Dashboard({ setTheme, onExit, workspaces = [], onWorkspaceChange, works
   const [themeBusy, setThemeBusy] = useState(false);
   const [themeMsg, setThemeMsg] = useState({ text: '', error: false });
   const [accountMsg, setAccountMsg] = useState({ text: '', error: false });
+  const [resetConfirmation, setResetConfirmation] = useState('');
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetMsg, setResetMsg] = useState({ text: '', error: false });
+  const resetLock = useRef(false);
   const figureLoadSequence = useRef(0);
   const activeWorkspace = workspaces.find((item) => String(item.id) === selectedWorkspace()) || workspaces[0];
   const canAccess = (scope) => activeWorkspace?.role === 'owner' || !!activeWorkspace?.permissions?.[scope]?.view;
@@ -473,6 +477,23 @@ function Dashboard({ setTheme, onExit, workspaces = [], onWorkspaceChange, works
       setAccountMsg({ text: error.message, error: true });
     } finally {
       setSettingsBusy(false);
+    }
+  };
+
+  const resetBusiness = async (event) => {
+    event.preventDefault();
+    if (resetLock.current) return;
+    resetLock.current = true;
+    setResetBusy(true);
+    setResetMsg({ text: '', error: false });
+    try {
+      const result = await resetBusinessData(resetConfirmation, localStorage.getItem(TOKEN_KEY));
+      onReset(result.message);
+    } catch (error) {
+      setResetMsg({ text: error.message, error: true });
+    } finally {
+      resetLock.current = false;
+      setResetBusy(false);
     }
   };
 
@@ -897,6 +918,19 @@ function Dashboard({ setTheme, onExit, workspaces = [], onWorkspaceChange, works
             </div>
             {(!preferences.email_verified || !preferences.email_delivery_configured) && <p>Verify your account email and configure secure email delivery to use these actions.</p>}
             {accountMsg.text && <p className={accountMsg.error ? 'nerr' : 'nok'} role={accountMsg.error ? 'alert' : 'status'}>{accountMsg.text}</p>}
+            {activeWorkspace?.role === 'owner' && <>
+              <h3>Start fresh</h3>
+              <p>Permanently removes this business’s sales, purchases, expenses, inventory, customers, suppliers, notifications, and uploaded images. Your account, other preferences, and team setup remain; the business logo is removed.</p>
+              <form className='nform' onSubmit={resetBusiness}>
+                <label>Type RESET to confirm
+                  <input autoComplete='off' value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} />
+                </label>
+                <button type='submit' className='btn glass' disabled={resetBusy || resetConfirmation !== 'RESET'}>
+                  {resetBusy ? 'Resetting…' : 'Delete business data'}
+                </button>
+              </form>
+              {resetMsg.text && <p className={resetMsg.error ? 'nerr' : 'nok'} role={resetMsg.error ? 'alert' : 'status'}>{resetMsg.text}</p>}
+            </>}
           </section>
         </div>
       </>
@@ -1458,6 +1492,7 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState(selectedWorkspace());
   const [workspaceNotice, setWorkspaceNotice] = useState('');
+  const [resetVersion, setResetVersion] = useState(0);
   const [teamInvite, setTeamInvite] = useState(null);
   const [teamInviteMessage, setTeamInviteMessage] = useState({ text: '', error: false });
   const [accountChallenge, setAccountChallenge] = useState(null);
@@ -1687,9 +1722,10 @@ export default function App() {
     </div>
   );
   if (view === 'app') return <Dashboard
-    key={activeWorkspaceId}
+    key={`${activeWorkspaceId}-${resetVersion}`}
     setTheme={setTheme}
     onExit={signOut}
+    onReset={(message) => { setWorkspaceNotice(message); setResetVersion((version) => version + 1); }}
     workspaces={workspaces}
     workspaceNotice={workspaceNotice}
     onWorkspaceChange={(id) => {

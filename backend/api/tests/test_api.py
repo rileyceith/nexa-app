@@ -1385,6 +1385,73 @@ class ApiTests(TestCase):
         self.assertEqual(self.image_status(image_url), 404)
         self.assertEqual(self.image_status(logo_url), 404)
 
+    def test_business_data_reset_keeps_account_preferences_and_team(self):
+        image_url = self.upload()
+        product = m.Product.objects.get(owner=self.user, name="Mug")
+        m.Supplier.objects.create(owner=self.user, name="Supplier")
+        customer = m.Customer.objects.create(owner=self.user, name="Regular")
+        m.Sale.objects.create(owner=self.user, customer=customer, product=product, amount=20, cogs=8)
+        m.Expense.objects.create(owner=self.user, category="Rent", amount=10)
+        m.Purchase.objects.create(owner=self.user, product=product, quantity=3, unit_cost=5)
+        m.NotificationState.objects.create(owner=self.user, key="low-stock", active=True)
+        m.NotificationDelivery.objects.create(
+            owner=self.user, email=self.user.email, currency="USD", time_zone="UTC", messages=[],
+        )
+        membership = m.TeamMembership.objects.create(owner=self.user, member=self.other)
+        invitation = m.TeamInvitation.objects.create(
+            owner=self.user, email="new@example.com", token_hash="a" * 64,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        prefs = m.UserSettings.objects.get(owner=self.user)
+        prefs.business_name = "Keep this business profile"
+        prefs.currency = "EUR"
+        prefs.team_sharing_enabled = True
+        prefs.save(update_fields=["business_name", "currency", "team_sharing_enabled"])
+        logo = self.client.patch(
+            "/api/settings/", json.dumps({"business_logo": PNG_URL}),
+            content_type="application/json", **self.h,
+        )
+        self.assertEqual(logo.status_code, 200)
+        logo_url = logo.json()["business_logo_url"]
+        m.Product.objects.create(owner=self.other, name="Other business", price=10, cost=5)
+
+        self.assertEqual(self.client.post(
+            "/api/account/reset-data/", {"confirmation": "RESET"}, content_type="application/json",
+        ).status_code, 401)
+        self.assertEqual(self.post(
+            "/api/account/reset-data/", {"confirmation": "RESET"},
+            {**self.other_h, "HTTP_X_NEXA_WORKSPACE": str(self.user.pk)},
+        ).status_code, 403)
+        self.assertTrue(m.Product.objects.filter(owner=self.other).exists())
+        self.assertEqual(self.post("/api/account/reset-data/", {"confirmation": "delete"}).status_code, 400)
+        self.assertTrue(m.Product.objects.filter(owner=self.user).exists())
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.post("/api/account/reset-data/", {"confirmation": "RESET"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.image_status(image_url), 404)
+        self.assertEqual(self.image_status(logo_url), 404)
+        for model in (
+            m.Supplier, m.Product, m.StockBatch, m.StockMovement, m.Customer, m.Sale,
+            m.Expense, m.Purchase, m.NotificationState, m.NotificationDelivery,
+        ):
+            self.assertFalse(model.objects.filter(owner=self.user).exists(), model.__name__)
+        self.assertTrue(m.Product.objects.filter(owner=self.other, name="Other business").exists())
+        self.assertTrue(get_user_model().objects.filter(pk=self.user.pk).exists())
+        self.assertEqual(m.TeamMembership.objects.get(pk=membership.pk).owner_id, self.user.pk)
+        self.assertTrue(m.TeamInvitation.objects.filter(pk=invitation.pk).exists())
+        prefs.refresh_from_db()
+        self.assertEqual((prefs.business_name, prefs.currency), ("Keep this business profile", "EUR"))
+        self.assertEqual((prefs.business_logo_key, prefs.business_logo_fingerprint), ("", None))
+
+    def test_business_data_reset_rolls_back_if_deletion_fails(self):
+        image_url = self.upload()
+        with patch("api.models.Expense.objects.filter", side_effect=OperationalError("database failure")):
+            response = self.post("/api/account/reset-data/", {"confirmation": "RESET"})
+        self.assertEqual(response.status_code, 500)
+        self.assertTrue(m.Product.objects.filter(owner=self.user, name="Mug").exists())
+        self.assertEqual(self.image_status(image_url), 200)
+
     def test_email_alerts_are_opt_in_and_deduplicated_until_resolved(self):
         prefs, _ = m.UserSettings.objects.get_or_create(owner=self.user)
         prefs.email_verified = True

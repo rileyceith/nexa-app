@@ -49,8 +49,9 @@ syncing and rebuilding the app. Do not rely on that temporary address for ongoin
 Use Node.js 22 or newer and Android Studio with JDK 21 and Android SDK 36 to open `android/` and
 build or run Android. To build iOS, run `npm ci` and `npm run sync:mobile` on a Mac with Xcode,
 then open `ios/App/App.xcodeproj`. Signing and store distribution require your own developer
-accounts. The initial app ID is `com.nexa.app`; choose your own unique ID before publishing and
-update the native projects and `capacitor.config.json` consistently.
+accounts. The Android app ID is `com.keynes.nexa`; confirm it is available in Play Console before
+publishing. The iOS bundle identifier remains `com.nexa.app` and must be configured separately
+before an iOS release.
 
 The frontend and React are bundled, but API features need a network connection; fonts may still
 load from Google. This shell does not implement email-link deep linking or secure native token

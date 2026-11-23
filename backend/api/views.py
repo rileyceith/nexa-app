@@ -1080,6 +1080,44 @@ def account_delete(request):
     return response
 
 
+@api("POST", max_body=1024)
+def reset_business_data(request):
+    if request.data.get("confirmation") != "RESET":
+        raise svc.ServiceError("Type RESET to confirm this action.")
+
+    owner = request.owner
+    with transaction.atomic():
+        prefs = m.UserSettings.objects.select_for_update().get(owner=owner)
+        photo_keys = set(
+            m.Product.objects.select_for_update().filter(owner=owner).exclude(image_key="").values_list("image_key", flat=True)
+        )
+        if prefs.business_logo_key:
+            photo_keys.add(prefs.business_logo_key)
+        m.StockMovement.objects.filter(owner=owner).delete()
+        m.Purchase.objects.filter(owner=owner).delete()
+        m.StockBatch.objects.filter(owner=owner).delete()
+        m.Sale.objects.filter(owner=owner).delete()
+        m.Expense.objects.filter(owner=owner).delete()
+        m.Customer.objects.filter(owner=owner).delete()
+        m.Product.objects.filter(owner=owner).delete()
+        m.Supplier.objects.filter(owner=owner).delete()
+        m.NotificationDelivery.objects.filter(owner=owner).delete()
+        m.NotificationState.objects.filter(owner=owner).delete()
+        m.UserSettings.objects.filter(pk=prefs.pk).update(
+            business_logo_key="", business_logo_fingerprint=None,
+        )
+
+        def cleanup_photos():
+            for key in sorted(photo_keys):
+                images.delete(key)
+
+        transaction.on_commit(cleanup_photos)
+
+    response = ok({"message": "Your business records and uploaded images were deleted. Your account, preferences, and team setup were kept."})
+    response["Cache-Control"] = "no-store, private"
+    return response
+
+
 @api("GET")
 def goal_series(request):
     prefs = m.UserSettings.objects.filter(owner=request.owner).first()

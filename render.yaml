@@ -31,7 +31,7 @@ services:
       - key: NEXA_ALLOWED_HOSTS
         value: api.Nexa-app.com,nexa-api.onrender.com
       - key: NEXA_CORS_ORIGINS
-        value: https://app.Nexa.com
+        value: https://app.Nexa.com,https://localhost,capacitor://localhost
       - key: NEXA_FRONTEND_URL
         value: https://app.Nexa.com/Nexa.html
       - key: NEXA_MEDIA_ROOT

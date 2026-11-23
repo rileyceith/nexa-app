@@ -1,4 +1,4 @@
-package com.nexa.app;
+package com.keynes.nexa;
 
 import com.getcapacitor.BridgeActivity;
 
