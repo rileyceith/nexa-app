@@ -182,7 +182,7 @@ to either database are not synchronized to the other. Stop the ordinary local se
 This development server is not a public deployment; local images still need to be copied to
 shared storage before deploying.
 
-The assistant requires `NEXA_AI_API_KEY` (a Google Gemini API key). `NEXA_AI_MODEL` defaults to `gemini-3.8-flash`, and `NEXA_AI_BASE_URL` defaults to Google's OpenAI-compatible endpoint.
+The assistant requires `NEXA_AI_API_KEY` (a Google Gemini API key). `NEXA_AI_MODEL` defaults to `gemini-3.8-flash`, and `NEXA_AI_BASE_URL` defaults to Google's OpenAI-compatible endpoint. Gemini 3.8 Flash currently has free input and output tokens on Google's standard free tier, subject to provider limits. Google says free-tier content may be used to improve its products; review the [Gemini API pricing and terms](https://ai.google.dev/gemini-api/docs/pricing) before enabling it.
 Keep the key in the server environment and never in frontend code. The assistant sends the user's
 question and an owner-scoped monthly aggregate (not customer details or individual transactions)
 to the configured AI provider (Google Gemini by default). Names and record identifiers are excluded, and conversation
@@ -208,8 +208,11 @@ category comparisons, and product revenue rankings.
   NEXA_FRONTEND_URL=https://app.Nexa.com/Nexa.html
   NEXA_DATABASE_URL=<Render Postgres internal URL>
   NEXA_MEDIA_ROOT=/var/data/media
+  NEXA_AI_API_KEY=<Google AI Studio API key>
+  NEXA_AI_MODEL=gemini-3.8-flash
   ```
 
+- Add `NEXA_AI_API_KEY` as a secret in the Render service environment. Create the key in Google AI Studio, keep it out of source control, and do not paste it into chat.
 - Add `api.Nexa-app.com` as a custom domain in Render, then add the CNAME record it shows at your DNS provider.
 - Configure authenticated TLS SMTP or the Resend HTTPS backend with Render secrets before enabling email features. Production defaults to SMTP, never console logging; password reset requests remain generic even when delivery fails. Password sign-in works without email.
 

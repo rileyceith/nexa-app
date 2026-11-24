@@ -42,7 +42,6 @@ def generate_answer(question, context):
             },
         ],
         "max_tokens": 1024,
-        "reasoning_effort": "minimal",
     }).encode("utf-8")
     request = Request(
         f"{settings.NEXA_AI_BASE_URL.rstrip('/')}/chat/completions",

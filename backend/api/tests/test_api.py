@@ -828,7 +828,9 @@ class ApiTests(TestCase):
             "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         )
         self.assertIn("Question: How did I do?", request.data.decode())
-        self.assertEqual(json.loads(request.data)["model"], "test-model")
+        payload = json.loads(request.data)
+        self.assertEqual(payload["model"], "test-model")
+        self.assertNotIn("reasoning_effort", payload)
 
     @override_settings(NEXA_AI_API_KEY="server-only-key")
     @patch("api.insights.assistant.urlopen", side_effect=HTTPError("https://generativelanguage.googleapis.com", 429, "busy", {}, None))

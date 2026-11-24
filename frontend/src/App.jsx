@@ -1299,7 +1299,7 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
             </button>
           </form>
           {assistantError && <p className='assistant-error' role='alert'>{assistantError}</p>}
-          <p className='assistant-note'>Only your question and aggregated monthly summary are sent to the configured AI service; customer and product names or transaction details are not shared. Answers are suggestions, not financial advice.</p>
+          <p className='assistant-note'>Only your question and aggregated monthly summary are sent to Gemini; customer and product names or transaction details are not shared. Google's free tier may use submitted content to improve its products. Answers are suggestions, not financial advice.</p>
             </>
           )}
         </section>
