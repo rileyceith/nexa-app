@@ -977,10 +977,13 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
             {list.length === 0 && <p>No sales match your search.</p>}
             {salesActionError && <p className='nerr' role='alert'>{salesActionError}</p>}
             {list.map(([w, a, s, d, p, q, id], i) => (
-              <div className='npill' key={w + i + d}>
-                <span className='nin xs'>{w[0]}</span><span>{w}</span><span className='nmut'>{p ? `${d} · ${p} × ${q}` : d}</span><b>{money(a)}</b>
-                <span className={'chipS ' + (s === 'Paid' ? 'paid' : 'pend')}>{s}</span>
-                {s === 'Pending' && canEdit('sales') && <button type='button' className='btn glass nbtn' onClick={() => markSalePaid(id)} disabled={updatingSaleId !== null}>{updatingSaleId === id ? 'Updating…' : 'Mark paid'}</button>}
+              <div className={`npill sale-row${s === 'Pending' && canEdit('sales') ? ' has-action' : ''}`} key={w + i + d}>
+                <span className='nin xs sale-avatar'>{w[0]}</span>
+                <span className='sale-customer'>{w}</span>
+                <span className='nmut sale-meta'>{p ? `${d} · ${p} × ${q}` : d}</span>
+                <b className='sale-amount'>{money(a)}</b>
+                <span className={'chipS sale-status ' + (s === 'Paid' ? 'paid' : 'pend')}>{s}</span>
+                {s === 'Pending' && canEdit('sales') && <button type='button' className='btn glass sale-pay' onClick={() => markSalePaid(id)} disabled={updatingSaleId !== null}>{updatingSaleId === id ? 'Updating…' : 'Mark paid'}</button>}
               </div>
             ))}
           </section>

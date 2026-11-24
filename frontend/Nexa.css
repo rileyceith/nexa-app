@@ -268,6 +268,14 @@ body.inapp{background:radial-gradient(900px 560px at 12% 6%,#e6dedc,transparent 
 .npill .nmut{margin-left:auto}
 .npill .nmut ~ b{margin-left:10px}
 .npill.col{flex-direction:column;align-items:flex-start;gap:2px}
+.sale-row{display:grid;grid-template-columns:24px minmax(100px,1fr) minmax(120px,1.4fr) auto auto;grid-template-areas:"avatar customer meta amount status"}
+.sale-row.has-action{grid-template-columns:24px minmax(100px,1fr) minmax(100px,1.2fr) auto auto auto;grid-template-areas:"avatar customer meta amount status action"}
+.sale-avatar{grid-area:avatar}
+.sale-customer{grid-area:customer;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sale-row .sale-meta{grid-area:meta;min-width:0;margin-left:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sale-row .sale-amount{grid-area:amount;margin-left:0;white-space:nowrap}
+.sale-status{grid-area:status;white-space:nowrap}
+.sale-pay{grid-area:action;padding:6px 10px;font-size:12px;white-space:nowrap}
 .chipS{padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;border:1px solid var(--rule);color:var(--muted);letter-spacing:.03em}
 .chipS.paid{color:var(--ok);border-color:var(--ok)}
 .chipS.late{color:var(--warn);border-color:var(--warn)}
@@ -419,6 +427,8 @@ body.inapp{background:radial-gradient(900px 560px at 12% 6%,#e6dedc,transparent 
 @media (max-width:520px){
   .kpis,.kpis.three{grid-template-columns:1fr}
   .dash{padding:20px 14px 96px}
+  .sale-row,.sale-row.has-action{grid-template-columns:22px minmax(0,1fr) auto auto;grid-template-areas:"avatar customer amount status" "avatar meta action action";column-gap:8px;row-gap:6px}
+  .sale-pay{justify-self:end}
   .nbars{gap:8px}
   .assistant-form{grid-template-columns:1fr}
   .assistant-form .btn{justify-self:end}
