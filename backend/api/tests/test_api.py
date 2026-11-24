@@ -832,6 +832,30 @@ class ApiTests(TestCase):
         self.assertEqual(payload["model"], "test-model")
         self.assertNotIn("reasoning_effort", payload)
 
+    @override_settings(NEXA_AI_API_KEY="server-only-key", NEXA_AI_MODEL="gemini-3.8-flash")
+    @patch("api.insights.assistant.time.sleep")
+    @patch("api.insights.assistant.urlopen")
+    def test_assistant_retries_provider_unavailable_with_low_reasoning(self, urlopen, sleep):
+        response = urlopen.return_value
+        response.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"Ready."}}]}'
+        urlopen.side_effect = [HTTPError("https://example.test", 503, "busy", {}, None), response]
+
+        self.assertEqual(ai.generate_answer("Question", {"period": "2026-10"}), "Ready.")
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(json.loads(urlopen.call_args.args[0].data)["reasoning_effort"], "low")
+        sleep.assert_called_once_with(1)
+
+    @override_settings(NEXA_AI_API_KEY="server-only-key")
+    @patch("api.insights.assistant.urlopen", side_effect=TimeoutError())
+    def test_assistant_reports_timeout_without_retry(self, urlopen):
+        with self.assertRaises(svc.ServiceError) as error:
+            ai.generate_answer("Question", {"period": "2026-10"})
+
+        self.assertEqual(error.exception.status, 502)
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertGreater(urlopen.call_args.kwargs["timeout"], 15)
+        self.assertLessEqual(urlopen.call_args.kwargs["timeout"], 24)
+
     @override_settings(NEXA_AI_API_KEY="server-only-key")
     @patch("api.insights.assistant.urlopen", side_effect=HTTPError("https://generativelanguage.googleapis.com", 429, "busy", {}, None))
     def test_assistant_provider_errors_are_sanitized(self, _urlopen):

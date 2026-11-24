@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -28,7 +29,7 @@ def generate_answer(question, context):
     if not api_key:
         raise ServiceError("The AI assistant is not configured yet.", 503)
 
-    payload = json.dumps({
+    payload = {
         "model": settings.NEXA_AI_MODEL,
         "messages": [
             {"role": "system", "content": INSTRUCTIONS},
@@ -42,25 +43,34 @@ def generate_answer(question, context):
             },
         ],
         "max_tokens": 1024,
-    }).encode("utf-8")
+    }
+    if settings.NEXA_AI_MODEL == "gemini-3.8-flash":
+        payload["reasoning_effort"] = "low"
+    payload = json.dumps(payload).encode("utf-8")
     request = Request(
         f"{settings.NEXA_AI_BASE_URL.rstrip('/')}/chat/completions",
         data=payload,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=15) as response:
-            data = json.loads(response.read(128_000).decode("utf-8"))
-    except HTTPError as error:
-        logger.warning("AI provider returned HTTP %s", error.code)
-        raise ServiceError("The AI assistant is temporarily unavailable. Try again shortly.", 502) from None
-    except OSError as error:
-        logger.warning("AI provider connection failed: %s", type(error).__name__)
-        raise ServiceError("The AI assistant is temporarily unavailable. Try again shortly.", 502) from None
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        logger.warning("AI provider returned an invalid response.")
-        raise ServiceError("The AI assistant returned an invalid response. Try again shortly.", 502) from None
+    deadline = time.monotonic() + 24
+    for attempt in range(2):
+        try:
+            with urlopen(request, timeout=max(1, deadline - time.monotonic())) as response:
+                data = json.loads(response.read(128_000).decode("utf-8"))
+            break
+        except HTTPError as error:
+            logger.warning("AI provider returned HTTP %s", error.code)
+            if error.code == 503 and attempt == 0 and deadline - time.monotonic() > 2:
+                time.sleep(1)
+                continue
+            raise ServiceError("The AI assistant is temporarily unavailable. Try again shortly.", 502) from None
+        except OSError as error:
+            logger.warning("AI provider connection failed: %s", type(error).__name__)
+            raise ServiceError("The AI assistant is temporarily unavailable. Try again shortly.", 502) from None
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning("AI provider returned an invalid response.")
+            raise ServiceError("The AI assistant returned an invalid response. Try again shortly.", 502) from None
 
     answer = None
     choices = data.get("choices") if isinstance(data, dict) else None
