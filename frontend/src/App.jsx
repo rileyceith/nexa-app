@@ -6,7 +6,7 @@ import AccountSettings from "./features/settings/AccountSettings.jsx";
 import TeamSettings from "./features/settings/TeamSettings.jsx";
 import { currentUser, logout, resetPassword, verifyMagicLink } from "./features/auth/api.js";
 import { listProducts } from "./features/catalog/api.js";
-import { createExpense, createSale, listExpenses, listSales } from "./features/sales/api.js";
+import { createExpense, createSale, listExpenses, listSales, updateSale } from "./features/sales/api.js";
 import { createPurchase, listBatches, listPurchases, receivePurchase, receiveStock } from "./features/inventory/api.js";
 import { analyze, chat } from "./features/insights/api.js";
 import { getDashboard, getReports } from "./features/reports/api.js";
@@ -219,6 +219,8 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
   const [expenseSummary, setExpenseSummary] = useState({ items: [], by_category: [] });
   const [reportRows, setReportRows] = useState([]);
   const [sales, setSales] = useState([]);
+  const [updatingSaleId, setUpdatingSaleId] = useState(null);
+  const [salesActionError, setSalesActionError] = useState('');
   const [expList, setExpList] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [form, setForm] = useState(null);
@@ -315,7 +317,7 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
     );
     if (canAccess('sales')) requests.push(
       listSales(token).then((saleList) => {
-        if (sequence === figureLoadSequence.current) setSales(saleList.map((s) => [s.customer, toNum(s.amount), s.status, shortDate(s.date), s.product || '', s.product ? s.quantity : 0]));
+        if (sequence === figureLoadSequence.current) setSales(saleList.map((s) => [s.customer, toNum(s.amount), s.status, shortDate(s.date), s.product || '', s.product ? s.quantity : 0, s.id]));
       }).catch((error) => { if (sequence === figureLoadSequence.current) setDashError(error.message); }),
     );
     if (canAccess('reports')) requests.push(
@@ -552,6 +554,22 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
       loadFigures();
     }
     setM(monthName()); setForm(null);
+  };
+  const markSalePaid = async (saleId) => {
+    if (updatingSaleId !== null) return;
+    setUpdatingSaleId(saleId);
+    setSalesActionError('');
+    try {
+      await updateSale(saleId, { status: 'Paid' }, localStorage.getItem(TOKEN_KEY));
+      await loadFigures();
+      if (canAccess('settings')) {
+        await loadGoal().catch((error) => setSalesActionError(error.message));
+      }
+    } catch (error) {
+      setSalesActionError(error.message);
+    } finally {
+      setUpdatingSaleId(null);
+    }
   };
   const askAssistant = async (event) => {
     event.preventDefault();
@@ -957,10 +975,12 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
               </div>
             </div>
             {list.length === 0 && <p>No sales match your search.</p>}
-            {list.map(([w, a, s, d, p, q], i) => (
+            {salesActionError && <p className='nerr' role='alert'>{salesActionError}</p>}
+            {list.map(([w, a, s, d, p, q, id], i) => (
               <div className='npill' key={w + i + d}>
                 <span className='nin xs'>{w[0]}</span><span>{w}</span><span className='nmut'>{p ? `${d} · ${p} × ${q}` : d}</span><b>{money(a)}</b>
                 <span className={'chipS ' + (s === 'Paid' ? 'paid' : 'pend')}>{s}</span>
+                {s === 'Pending' && canEdit('sales') && <button type='button' className='btn glass nbtn' onClick={() => markSalePaid(id)} disabled={updatingSaleId !== null}>{updatingSaleId === id ? 'Updating…' : 'Mark paid'}</button>}
               </div>
             ))}
           </section>
