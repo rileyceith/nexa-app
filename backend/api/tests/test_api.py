@@ -771,10 +771,16 @@ class ApiTests(TestCase):
 
     @patch("api.insights.assistant.generate_answer", return_value="Revenue was $120.")
     def test_assistant_uses_only_requesting_owners_aggregated_financial_context(self, generate_answer):
+        previous_year, previous_month = svc.previous_month(timezone.localdate().year, timezone.localdate().month)
+        m.Sale.objects.create(
+            owner=self.user, amount=Decimal("100"),
+            date=svc.month_bounds(previous_year, previous_month)[0],
+        )
         self.post("/api/sales/", {"amount": "100", "customer": "Private customer"})
         product = self.product(name="Private product", category="Footwear")
         self.post("/api/receive/", {"product_id": product["id"], "quantity": 1, "unit_cost": "10"})
         self.post("/api/sales/", {"amount": "20", "product_id": product["id"], "quantity": 1})
+        m.Sale.objects.create(owner=self.user, amount=Decimal("1000"), status=m.Sale.PENDING)
         self.post("/api/expenses/", {"category": "Rent", "amount": "30"})
         self.post("/api/sales/", {"amount": "9000"}, self.other_h)
 
@@ -792,7 +798,10 @@ class ApiTests(TestCase):
         self.assertEqual(question, "How did I do this month?")
         self.assertEqual(context["summary"]["revenue"], "120.00")
         self.assertEqual(context["summary"]["expenses"], "30.00")
-        self.assertIsNone(context["change_vs_previous_pct"]["revenue"])
+        self.assertEqual(context["change_vs_previous_pct"]["revenue"], "20.0")
+        self.assertEqual(context["pending_payments"]["total"], "1000.00")
+        self.assertEqual(sum(map(Decimal, context["weekly_paid_revenue"])), Decimal("120.00"))
+        self.assertEqual(context["forecast"]["Expected"]["next_month"], "129.60")
         self.assertEqual(context["top_product_categories"][0]["category"], "Footwear")
         self.assertNotIn("9000", str(context))
         self.assertNotIn("Private customer", str(context))
@@ -830,6 +839,11 @@ class ApiTests(TestCase):
         self.assertIn("Question: How did I do?", request.data.decode())
         payload = json.loads(request.data)
         self.assertEqual(payload["model"], "test-model")
+        instructions = payload["messages"][0]["content"]
+        self.assertIn("Respond naturally to greetings", instructions)
+        self.assertIn("For business or financial questions", instructions)
+        self.assertIn("precomputed figures, growth rates, and forecasts", instructions)
+        self.assertIn("Never calculate or recalculate", instructions)
         self.assertNotIn("reasoning_effort", payload)
 
     @override_settings(NEXA_AI_API_KEY="server-only-key", NEXA_AI_MODEL="gemini-3.8-flash")
