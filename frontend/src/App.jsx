@@ -98,7 +98,7 @@ function Title({ ic, children, right }) {
   return (
     <div className='ct'>
       <span className='nin sm'><Ico d={ic} s={18} /></span>
-      <span className='dlab'>{children}</span>
+      <h2 className='dlab'>{children}</h2>
       {right}
     </div>
   );
@@ -976,16 +976,18 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
             </div>
             {list.length === 0 && <p>No sales match your search.</p>}
             {salesActionError && <p className='nerr' role='alert'>{salesActionError}</p>}
-            {list.map(([w, a, s, d, p, q, id], i) => (
-              <div className={`npill sale-row${s === 'Pending' && canEdit('sales') ? ' has-action' : ''}`} key={w + i + d}>
-                <span className='nin xs sale-avatar'>{w[0]}</span>
-                <span className='sale-customer'>{w}</span>
-                <span className='nmut sale-meta'>{p ? `${d} · ${p} × ${q}` : d}</span>
-                <b className='sale-amount'>{money(a)}</b>
-                <span className={'chipS sale-status ' + (s === 'Paid' ? 'paid' : 'pend')}>{s}</span>
-                {s === 'Pending' && canEdit('sales') && <button type='button' className='btn glass sale-pay' onClick={() => markSalePaid(id)} disabled={updatingSaleId !== null}>{updatingSaleId === id ? 'Updating…' : 'Mark paid'}</button>}
-              </div>
-            ))}
+            <div role='list' aria-label='Sales'>
+              {list.map(([w, a, s, d, p, q, id]) => (
+                <div role='listitem' className={`npill sale-row${s === 'Pending' && canEdit('sales') ? ' has-action' : ''}`} key={id}>
+                  <span className='nin xs sale-avatar' aria-hidden='true'>{w[0]}</span>
+                  <span className='sale-customer'>{w}</span>
+                  <span className='nmut sale-meta'>{p ? `${d} · ${p} × ${q}` : d}</span>
+                  <b className='sale-amount'>{money(a)}</b>
+                  <span className={'chipS sale-status ' + (s === 'Paid' ? 'paid' : 'pend')}>{s}</span>
+                  {s === 'Pending' && canEdit('sales') && <button type='button' className='btn glass sale-pay' aria-label={`${updatingSaleId === id ? 'Updating' : 'Mark paid'} for ${w}, ${money(a)}, ${d}`} onClick={() => markSalePaid(id)} disabled={updatingSaleId !== null}>{updatingSaleId === id ? 'Updating…' : 'Mark paid'}</button>}
+                </div>
+              ))}
+            </div>
           </section>
         </>
       );
@@ -1000,12 +1002,12 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
         <section className='dc'>
           <div className='ct'><input className='nsearch' placeholder='Search products' value={q} onChange={(e) => setQ(e.target.value)} aria-label='Search products' />
             <span className='nmut ml'>Sorted by {sort}</span></div>
-          <div className='nscroll'><div className='ntable'>
-            <div className='nth'><H k='name'>Product</H><span>Category</span><span>Price</span><span>Cost</span><H k='margin'>Margin</H><H k='stock'>Stock</H><H k='sold'>Sold, {m}</H></div>
+          <div className='nscroll'><div className='ntable' role='table' aria-label={`Products, ${m}`}>
+            <div className='nth' role='row'><span role='columnheader'><H k='name'>Product</H></span><span role='columnheader'>Category</span><span role='columnheader'>Price</span><span role='columnheader'>Cost</span><span role='columnheader'><H k='margin'>Margin</H></span><span role='columnheader'><H k='stock'>Stock</H></span><span role='columnheader'><H k='sold'>Sold, {m}</H></span></div>
             {rows.map((r) => (
-              <div className='ntr' key={r.n}>
-                <b>{r.n}</b><span>{r.c}</span><span>{money(r.p)}</span><span>{preciseMoney(r.k)}</span>
-                <span className='ncy'>{r.mg.toFixed(0)}%</span><span className={r.s / r.t < Number(preferences.low_stock_threshold) ? 'nwarn' : ''}>{r.s}</span><span>{r.sold}</span>
+              <div className='ntr' role='row' key={r.n}>
+                <b role='rowheader'>{r.n}</b><span role='cell'>{r.c}</span><span role='cell'>{money(r.p)}</span><span role='cell'>{preciseMoney(r.k)}</span>
+                <span role='cell' className='ncy'>{r.mg.toFixed(0)}%</span><span role='cell' className={r.s / r.t < Number(preferences.low_stock_threshold) ? 'nwarn' : ''}>{r.s}</span><span role='cell'>{r.sold}</span>
               </div>
             ))}
           </div></div>
@@ -1023,7 +1025,7 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
             <div className='nstock row' key={p[0]}>
               {p[7] ? <img className='pimg' src={p[7]} alt={p[0]} /> : <span className='nin'>{p[0][0]}</span>}
               <div className='grow'><div className='nrow2'><span>{p[0]}</span><span>{p[4]} of {p[5]}</span></div><Bar pct={(p[4] / p[5]) * 100} /></div>
-              <button className='dmini' disabled={!canEdit('inventory') || ordered[p[0]]} onClick={() => reorder(p)}>{ordered[p[0]] ? 'Ordered ✓' : 'Reorder'}</button>
+              <button className='dmini' aria-label={`${ordered[p[0]] ? 'Ordered' : 'Reorder'} ${p[0]}`} disabled={!canEdit('inventory') || ordered[p[0]]} onClick={() => reorder(p)}>{ordered[p[0]] ? 'Ordered ✓' : 'Reorder'}</button>
             </div>
           ))}
         </section>
@@ -1224,10 +1226,10 @@ function Dashboard({ setTheme, onExit, onReset, workspaces = [], onWorkspaceChan
     reports: () => (
       <section className='dc'>
         <Title ic={NAV.find((x) => x[0] === 'reports')[2]}>Monthly reports</Title>
-        <div className='nscroll'><div className='ntable'>
-          <div className='nth r'><span>Period</span><span>Revenue</span><span>Expenses</span><span>Gross profit</span><span>Net profit</span></div>
+        <div className='nscroll'><div className='ntable' role='table' aria-label='Monthly reports'>
+          <div className='nth r' role='row'><span role='columnheader'>Period</span><span role='columnheader'>Revenue</span><span role='columnheader'>Expenses</span><span role='columnheader'>Gross profit</span><span role='columnheader'>Net profit</span></div>
           {reportRows.slice().reverse().map((r) => (
-            <div className='ntr r' key={r.month}><b>{monthLabel(r.month)}</b><span>{money(toNum(r.revenue))}</span><span>{money(toNum(r.expenses))}</span><span>{money(toNum(r.gross_profit))}</span><span className='ncy'>{money(toNum(r.net_profit))}</span></div>
+            <div className='ntr r' role='row' key={r.month}><b role='rowheader'>{monthLabel(r.month)}</b><span role='cell'>{money(toNum(r.revenue))}</span><span role='cell'>{money(toNum(r.expenses))}</span><span role='cell'>{money(toNum(r.gross_profit))}</span><span role='cell' className='ncy'>{money(toNum(r.net_profit))}</span></div>
           ))}
         </div></div>
       </section>

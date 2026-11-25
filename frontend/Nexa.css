@@ -204,6 +204,7 @@ body.inapp{background:radial-gradient(900px 560px at 12% 6%,#e6dedc,transparent 
 .ct .nin{display:none}
 .ct .nseg,.ct .nleg,.ct .ml{margin-left:auto}
 .dlab{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600;display:block}
+.ct h2.dlab{margin:0}
 .nin.xs{width:28px;height:28px;border-radius:4px;display:grid;place-items:center;flex:none;background:var(--tint);color:var(--ink);font-size:12px;font-weight:700}
 .nstock .nin{display:grid;place-items:center;width:34px;height:34px;flex:none;border-radius:4px;background:var(--tint);color:var(--ink);font-weight:700}
 
@@ -314,6 +315,12 @@ body.inapp{background:radial-gradient(900px 560px at 12% 6%,#e6dedc,transparent 
 .account-summary{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:14px;border:1px solid var(--rule);border-radius:8px;background:var(--bg);font-size:13px}
 .account-summary span{color:var(--muted)}
 .account-verification{grid-column:1/-1}
+.account-devices{align-self:start}
+.account-devices summary{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;list-style:none}
+.account-devices summary::-webkit-details-marker{display:none}
+.account-devices summary::after{content:'+';color:var(--muted);font-size:22px}
+.account-devices details[open] summary::after{content:'-'}
+.account-devices-title{display:block;margin:6px 0;font-size:17px;font-weight:600}
 .account-sessions{list-style:none;padding:0;margin:0}
 .account-sessions li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;border-top:1px solid var(--rule)}
 .account-sessions strong{font-size:14px}

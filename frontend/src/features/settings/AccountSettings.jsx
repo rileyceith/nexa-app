@@ -125,16 +125,18 @@ export default function AccountSettings({ onEmailChange, onSignOut }) {
           : !profile.email ? "Add and verify an account email to use security codes."
             : "Verify your current account email to use security codes."}</p>}
       </section>
-      <section className='dc'>
-        <div><span className='account-kicker'>ACTIVE SESSIONS</span><h3>Signed-in devices</h3>
-          <p>Browser details are available for new sign-ins. Older sessions may show as unknown.</p></div>
-        <ul className='account-sessions'>
-          {sessions.map((session) => <li key={session.id}>
-            <div><strong>{deviceName(session.device)}</strong>{session.current && <span className='account-badge'>This device</span>}
-              <p>Signed in {new Date(session.created_at).toLocaleString()}</p></div>
-            {!session.current && <button type='button' className='btn glass' disabled={busy || !canSend} onClick={() => sendCode("device", String(session.id))}>Sign out</button>}
-          </li>)}
-        </ul>
+      <section className='dc account-devices'>
+        <details>
+          <summary><span><span className='account-kicker'>ACTIVE SESSIONS</span><span className='account-devices-title'>Signed-in devices</span></span></summary>
+          <p>Browser details are available for new sign-ins. Older sessions may show as unknown.</p>
+          <ul className='account-sessions'>
+            {sessions.map((session) => <li key={session.id}>
+              <div><strong>{deviceName(session.device)}</strong>{session.current && <span className='account-badge'>This device</span>}
+                <p>Signed in {new Date(session.created_at).toLocaleString()}</p></div>
+              {!session.current && <button type='button' className='btn glass' disabled={busy || !canSend} onClick={() => sendCode("device", String(session.id))}>Sign out</button>}
+            </li>)}
+          </ul>
+        </details>
       </section>
       {action && <section className='dc account-verification'>
         <h3>Confirm {action.kind === "add_email" ? "email address" : action.kind === "email" ? "email change" : action.kind === "password" ? "password change" : "device sign-out"}</h3>
